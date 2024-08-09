@@ -9,7 +9,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"github.com/milvus-io/milvus/internal/proto/streamingpb"
+	"github.com/milvus-io/milvus/pkg/streaming/proto/streamingpb"
 	"github.com/milvus-io/milvus/pkg/util/typeutil"
 )
 
@@ -197,4 +197,11 @@ type StreamingCoordCataLog interface {
 
 	// SavePChannel save a pchannel info to metastore.
 	SavePChannels(ctx context.Context, info []*streamingpb.PChannelMeta) error
+}
+
+// StreamingNodeCataLog is the interface for streamingnode catalog
+type StreamingNodeCataLog interface {
+	ListSegmentAssignment(ctx context.Context, pChannelName string) ([]*streamingpb.SegmentAssignmentMeta, error)
+
+	SaveSegmentAssignments(ctx context.Context, pChannelName string, infos []*streamingpb.SegmentAssignmentMeta) error
 }

@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include "common/RegexQuery.h"
 #include "index/Index.h"
 #include "storage/FileManager.h"
 #include "storage/DiskFileManagerImpl.h"
@@ -146,13 +147,25 @@ class InvertedIndexTantivy : public ScalarIndex<T> {
     const TargetBitmap
     Query(const DatasetPtr& dataset) override;
 
+    const TargetBitmap
+    PatternMatch(const std::string& pattern) override {
+        PatternMatchTranslator translator;
+        auto regex_pattern = translator(pattern);
+        return RegexQuery(regex_pattern);
+    }
+
+    bool
+    SupportPatternMatch() const override {
+        return SupportRegexQuery();
+    }
+
     bool
     SupportRegexQuery() const override {
-        return true;
+        return std::is_same_v<T, std::string>;
     }
 
     const TargetBitmap
-    RegexQuery(const std::string& pattern) override;
+    RegexQuery(const std::string& regex_pattern) override;
 
     void
     BuildWithFieldData(const std::vector<FieldDataPtr>& datas) override;

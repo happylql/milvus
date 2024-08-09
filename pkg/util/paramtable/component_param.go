@@ -885,18 +885,20 @@ type gpuConfig struct {
 
 func (t *gpuConfig) init(base *BaseTable) {
 	t.InitSize = ParamItem{
-		Key:     "gpu.initMemSize",
-		Version: "2.3.4",
-		Doc:     `Gpu Memory Pool init size`,
-		Export:  true,
+		Key:          "gpu.initMemSize",
+		Version:      "2.3.4",
+		Doc:          `Gpu Memory Pool init size`,
+		Export:       true,
+		DefaultValue: "2048",
 	}
 	t.InitSize.Init(base.mgr)
 
 	t.MaxSize = ParamItem{
-		Key:     "gpu.maxMemSize",
-		Version: "2.3.4",
-		Doc:     `Gpu Memory Pool Max size`,
-		Export:  true,
+		Key:          "gpu.maxMemSize",
+		Version:      "2.3.4",
+		Doc:          `Gpu Memory Pool Max size`,
+		Export:       true,
+		DefaultValue: "4096",
 	}
 	t.MaxSize.Init(base.mgr)
 }
@@ -1700,6 +1702,8 @@ type queryCoordConfig struct {
 	CheckExecutedFlagInterval          ParamItem `refreshable:"false"`
 	CollectionBalanceSegmentBatchSize  ParamItem `refreshable:"true"`
 	UpdateCollectionLoadStatusInterval ParamItem `refreshable:"false"`
+	ClusterLevelLoadReplicaNumber      ParamItem `refreshable:"true"`
+	ClusterLevelLoadResourceGroups     ParamItem `refreshable:"true"`
 }
 
 func (p *queryCoordConfig) init(base *BaseTable) {
@@ -2236,6 +2240,24 @@ If this parameter is set false, Milvus simply searches the growing segments with
 		Export:       false,
 	}
 	p.CollectionBalanceSegmentBatchSize.Init(base.mgr)
+
+	p.ClusterLevelLoadReplicaNumber = ParamItem{
+		Key:          "queryCoord.clusterLevelLoadReplicaNumber",
+		Version:      "2.4.7",
+		DefaultValue: "0",
+		Doc:          "the cluster level default value for load replica number",
+		Export:       false,
+	}
+	p.ClusterLevelLoadReplicaNumber.Init(base.mgr)
+
+	p.ClusterLevelLoadResourceGroups = ParamItem{
+		Key:          "queryCoord.clusterLevelLoadResourceGroups",
+		Version:      "2.4.7",
+		DefaultValue: "",
+		Doc:          "resource group names for load collection should be at least equal to queryCoord.clusterLevelLoadReplicaNumber, separate with commas",
+		Export:       false,
+	}
+	p.ClusterLevelLoadResourceGroups.Init(base.mgr)
 }
 
 // /////////////////////////////////////////////////////////////////////////////
@@ -3080,6 +3102,7 @@ type dataCoordConfig struct {
 	WithCredential             ParamItem `refreshable:"false"`
 	IndexNodeID                ParamItem `refreshable:"false"`
 	IndexTaskSchedulerInterval ParamItem `refreshable:"false"`
+	TaskSlowThreshold          ParamItem `refreshable:"true"`
 
 	MinSegmentNumRowsToEnableIndex ParamItem `refreshable:"true"`
 	BrokerTimeout                  ParamItem `refreshable:"false"`
@@ -3730,6 +3753,13 @@ During compaction, the size of segment # of rows is able to exceed segment max #
 		DefaultValue: "1000",
 	}
 	p.IndexTaskSchedulerInterval.Init(base.mgr)
+
+	p.TaskSlowThreshold = ParamItem{
+		Key:          "datacoord.scheduler.taskSlowThreshold",
+		Version:      "2.0.0",
+		DefaultValue: "300",
+	}
+	p.TaskSlowThreshold.Init(base.mgr)
 
 	p.BrokerTimeout = ParamItem{
 		Key:          "dataCoord.brokerTimeout",

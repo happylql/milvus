@@ -10,10 +10,10 @@ import (
 	"github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/mocks/streamingnode/server/mock_flusher"
 	"github.com/milvus-io/milvus/internal/mocks/streamingnode/server/mock_wal"
-	"github.com/milvus-io/milvus/internal/proto/streamingpb"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/resource"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/status"
+	"github.com/milvus-io/milvus/pkg/streaming/proto/streamingpb"
 	"github.com/milvus-io/milvus/pkg/streaming/util/types"
 	"github.com/milvus-io/milvus/pkg/util/paramtable"
 )
@@ -30,7 +30,8 @@ func TestManager(t *testing.T) {
 	flusher := mock_flusher.NewMockFlusher(t)
 	flusher.EXPECT().RegisterPChannel(mock.Anything, mock.Anything).Return(nil)
 
-	resource.Init(
+	resource.InitForTest(
+		t,
 		resource.OptFlusher(flusher),
 		resource.OptRootCoordClient(rootcoord),
 		resource.OptDataCoordClient(datacoord),

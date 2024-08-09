@@ -108,7 +108,7 @@ func TestComponentParam(t *testing.T) {
 		assert.Equal(t, "defaultMilvus", Params.DefaultRootPassword.GetValue())
 
 		params.Save("common.security.superUsers", "")
-		assert.Equal(t, []string{""}, Params.SuperUsers.GetAsStrings())
+		assert.Equal(t, []string{}, Params.SuperUsers.GetAsStrings())
 
 		assert.Equal(t, false, Params.PreCreatedTopicEnabled.GetAsBool())
 
@@ -345,6 +345,9 @@ func TestComponentParam(t *testing.T) {
 
 		assert.Equal(t, 0.1, Params.DelegatorMemoryOverloadFactor.GetAsFloat())
 		assert.Equal(t, 5, Params.CollectionBalanceSegmentBatchSize.GetAsInt())
+
+		assert.Equal(t, 0, Params.ClusterLevelLoadReplicaNumber.GetAsInt())
+		assert.Len(t, Params.ClusterLevelLoadResourceGroups.GetAsStrings(), 0)
 	})
 
 	t.Run("test queryNodeConfig", func(t *testing.T) {
@@ -497,6 +500,8 @@ func TestComponentParam(t *testing.T) {
 		assert.Equal(t, 5, Params.MixCompactionSlotUsage.GetAsInt())
 		params.Save("dataCoord.slot.l0DeleteCompactionUsage", "4")
 		assert.Equal(t, 4, Params.L0DeleteCompactionSlotUsage.GetAsInt())
+		params.Save("datacoord.scheduler.taskSlowThreshold", "1000")
+		assert.Equal(t, 1000*time.Second, Params.TaskSlowThreshold.GetAsDuration(time.Second))
 	})
 
 	t.Run("test dataNodeConfig", func(t *testing.T) {

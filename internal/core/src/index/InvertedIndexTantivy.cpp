@@ -11,6 +11,7 @@
 
 #include "tantivy-binding.h"
 #include "common/Slice.h"
+#include "common/RegexQuery.h"
 #include "storage/LocalChunkManagerSingleton.h"
 #include "index/InvertedIndexTantivy.h"
 #include "log/Log.h"
@@ -23,6 +24,8 @@
 #include "InvertedIndexTantivy.h"
 
 namespace milvus::index {
+constexpr const char* TMP_INVERTED_INDEX_PREFIX = "/tmp/milvus/inverted-index/";
+
 inline TantivyDataType
 get_tantivy_data_type(proto::schema::DataType data_type) {
     switch (data_type) {
@@ -71,8 +74,8 @@ InvertedIndexTantivy<T>::InvertedIndexTantivy(
     disk_file_manager_ = std::make_shared<DiskFileManager>(ctx);
     auto field =
         std::to_string(disk_file_manager_->GetFieldDataMeta().field_id);
-    auto prefix = disk_file_manager_->GetLocalIndexObjectPrefix();
-    path_ = prefix;
+    auto prefix = disk_file_manager_->GetIndexIdentifier();
+    path_ = std::string(TMP_INVERTED_INDEX_PREFIX) + prefix;
     boost::filesystem::create_directories(path_);
     d_type_ = get_tantivy_data_type(schema_);
     if (tantivy_index_exist(path_.c_str())) {
@@ -314,9 +317,9 @@ InvertedIndexTantivy<std::string>::Query(const DatasetPtr& dataset) {
 
 template <typename T>
 const TargetBitmap
-InvertedIndexTantivy<T>::RegexQuery(const std::string& pattern) {
+InvertedIndexTantivy<T>::RegexQuery(const std::string& regex_pattern) {
     TargetBitmap bitset(Count());
-    auto array = wrapper_->regex_query(pattern);
+    auto array = wrapper_->regex_query(regex_pattern);
     apply_hits(bitset, array, true);
     return bitset;
 }
