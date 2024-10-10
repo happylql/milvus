@@ -104,6 +104,22 @@ func (c *SegmentChecker) Check(ctx context.Context) []task.Task {
 	task.SetPriority(task.TaskPriorityNormal, reduceTasks...)
 	results = append(results, reduceTasks...)
 
+	// clean node which has been move out from replica
+	for _, nodeInfo := range c.nodeMgr.GetAll() {
+		nodeID := nodeInfo.ID()
+		segmentsOnQN := c.dist.SegmentDistManager.GetByFilter(meta.WithNodeID(nodeID))
+		collectionSegments := lo.GroupBy(segmentsOnQN, func(segment *meta.Segment) int64 { return segment.GetCollectionID() })
+		for collectionID, segments := range collectionSegments {
+			replica := c.meta.ReplicaManager.GetByCollectionAndNode(collectionID, nodeID)
+			if replica == nil {
+				reduceTasks := c.createSegmentReduceTasks(ctx, segments, meta.NilReplica, querypb.DataScope_Historical)
+				task.SetReason("dirty segment exists", reduceTasks...)
+				task.SetPriority(task.TaskPriorityNormal, reduceTasks...)
+				results = append(results, reduceTasks...)
+			}
+		}
+	}
+
 	return results
 }
 

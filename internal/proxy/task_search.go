@@ -21,6 +21,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/exprutil"
+	"github.com/milvus-io/milvus/internal/util/reduce"
 	"github.com/milvus-io/milvus/pkg/log"
 	"github.com/milvus-io/milvus/pkg/metrics"
 	"github.com/milvus-io/milvus/pkg/util/commonpbutil"
@@ -76,8 +77,9 @@ type searchTask struct {
 	queryInfos      []*planpb.QueryInfo
 	relatedDataSize int64
 
-	reScorers  []reScorer
-	rankParams *rankParams
+	reScorers   []reScorer
+	rankParams  *rankParams
+	groupScorer func(group *Group) error
 }
 
 func (t *searchTask) CanSkipAllocTimestamp() bool {
@@ -168,10 +170,13 @@ func (t *searchTask) PreExecute(ctx context.Context) error {
 		}
 	}
 	if t.SearchRequest.GetIsAdvanced() {
-		t.rankParams, err = parseRankParams(t.request.GetSearchParams())
+		t.rankParams, err = parseRankParams(t.request.GetSearchParams(), t.schema.CollectionSchema)
 		if err != nil {
+			log.Info("parseRankParams failed", zap.Error(err))
 			return err
 		}
+	} else {
+		t.rankParams = nil
 	}
 	// Manually update nq if not set.
 	nq, err := t.checkNq(ctx)
@@ -339,21 +344,18 @@ func setQueryInfoIfMvEnable(queryInfo *planpb.QueryInfo, t *searchTask, plan *pl
 func (t *searchTask) initAdvancedSearchRequest(ctx context.Context) error {
 	ctx, sp := otel.Tracer(typeutil.ProxyRole).Start(ctx, "init advanced search request")
 	defer sp.End()
-
 	t.partitionIDsSet = typeutil.NewConcurrentSet[UniqueID]()
-
 	log := log.Ctx(ctx).With(zap.Int64("collID", t.GetCollectionID()), zap.String("collName", t.collectionName))
+
 	// fetch search_growing from search param
 	t.SearchRequest.SubReqs = make([]*internalpb.SubSearchRequest, len(t.request.GetSubReqs()))
 	t.queryInfos = make([]*planpb.QueryInfo, len(t.request.GetSubReqs()))
 	for index, subReq := range t.request.GetSubReqs() {
-		plan, queryInfo, offset, err := t.tryGeneratePlan(subReq.GetSearchParams(), subReq.GetDsl(), true)
+		plan, queryInfo, offset, err := t.tryGeneratePlan(subReq.GetSearchParams(), subReq.GetDsl())
 		if err != nil {
 			return err
 		}
-		if queryInfo.GetGroupByFieldId() != -1 {
-			return errors.New("not support search_group_by operation in the hybrid search")
-		}
+
 		internalSubReq := &internalpb.SubSearchRequest{
 			Dsl:                subReq.GetDsl(),
 			PlaceholderGroup:   subReq.GetPlaceholderGroup(),
@@ -364,6 +366,8 @@ func (t *searchTask) initAdvancedSearchRequest(ctx context.Context) error {
 			Topk:               queryInfo.GetTopk(),
 			Offset:             offset,
 			MetricType:         queryInfo.GetMetricType(),
+			GroupByFieldId:     t.rankParams.GetGroupByFieldId(),
+			GroupSize:          t.rankParams.GetGroupSize(),
 		}
 
 		// set PartitionIDs for sub search
@@ -403,6 +407,10 @@ func (t *searchTask) initAdvancedSearchRequest(ctx context.Context) error {
 			zap.Int64s("plan.OutputFieldIds", plan.GetOutputFieldIds()),
 			zap.Stringer("plan", plan)) // may be very large if large term passed.
 	}
+
+	t.SearchRequest.GroupByFieldId = t.rankParams.GetGroupByFieldId()
+	t.SearchRequest.GroupSize = t.rankParams.GetGroupSize()
+
 	// used for requery
 	if t.partitionKeyMode {
 		t.SearchRequest.PartitionIDs = t.partitionIDsSet.Collect()
@@ -413,6 +421,18 @@ func (t *searchTask) initAdvancedSearchRequest(ctx context.Context) error {
 		log.Info("generate reScorer failed", zap.Any("params", t.request.GetSearchParams()), zap.Error(err))
 		return err
 	}
+
+	// set up groupScorer for hybridsearch+groupBy
+	groupScorerStr, err := funcutil.GetAttrByKeyFromRepeatedKV(RankGroupScorer, t.request.GetSearchParams())
+	if err != nil {
+		groupScorerStr = MaxScorer
+	}
+	groupScorer, err := GetGroupScorer(groupScorerStr)
+	if err != nil {
+		return err
+	}
+	t.groupScorer = groupScorer
+
 	return nil
 }
 
@@ -423,7 +443,7 @@ func (t *searchTask) initSearchRequest(ctx context.Context) error {
 	log := log.Ctx(ctx).With(zap.Int64("collID", t.GetCollectionID()), zap.String("collName", t.collectionName))
 	// fetch search_growing from search param
 
-	plan, queryInfo, offset, err := t.tryGeneratePlan(t.request.GetSearchParams(), t.request.GetDsl(), false)
+	plan, queryInfo, offset, err := t.tryGeneratePlan(t.request.GetSearchParams(), t.request.GetDsl())
 	if err != nil {
 		return err
 	}
@@ -461,7 +481,8 @@ func (t *searchTask) initSearchRequest(ctx context.Context) error {
 	t.SearchRequest.MetricType = queryInfo.GetMetricType()
 	t.queryInfos = append(t.queryInfos, queryInfo)
 	t.SearchRequest.DslType = commonpb.DslType_BoolExprV1
-	t.SearchRequest.ExtraSearchParam = &internalpb.ExtraSearchParam{GroupByFieldId: queryInfo.GroupByFieldId, GroupSize: queryInfo.GroupSize}
+	t.SearchRequest.GroupByFieldId = queryInfo.GroupByFieldId
+	t.SearchRequest.GroupSize = queryInfo.GroupSize
 	log.Debug("proxy init search request",
 		zap.Int64s("plan.OutputFieldIds", plan.GetOutputFieldIds()),
 		zap.Stringer("plan", plan)) // may be very large if large term passed.
@@ -469,7 +490,7 @@ func (t *searchTask) initSearchRequest(ctx context.Context) error {
 	return nil
 }
 
-func (t *searchTask) tryGeneratePlan(params []*commonpb.KeyValuePair, dsl string, ignoreOffset bool) (*planpb.PlanNode, *planpb.QueryInfo, int64, error) {
+func (t *searchTask) tryGeneratePlan(params []*commonpb.KeyValuePair, dsl string) (*planpb.PlanNode, *planpb.QueryInfo, int64, error) {
 	annsFieldName, err := funcutil.GetAttrByKeyFromRepeatedKV(AnnsFieldKey, params)
 	if err != nil || len(annsFieldName) == 0 {
 		vecFields := typeutil.GetVectorFieldSchemas(t.schema.CollectionSchema)
@@ -482,7 +503,7 @@ func (t *searchTask) tryGeneratePlan(params []*commonpb.KeyValuePair, dsl string
 		}
 		annsFieldName = vecFields[0].Name
 	}
-	queryInfo, offset, parseErr := parseSearchInfo(params, t.schema.CollectionSchema, ignoreOffset)
+	queryInfo, offset, parseErr := parseSearchInfo(params, t.schema.CollectionSchema, t.rankParams)
 	if parseErr != nil {
 		return nil, nil, 0, parseErr
 	}
@@ -531,7 +552,7 @@ func (t *searchTask) tryParsePartitionIDsFromPlan(plan *planpb.PlanNode) ([]int6
 func (t *searchTask) Execute(ctx context.Context) error {
 	ctx, sp := otel.Tracer(typeutil.ProxyRole).Start(ctx, "Proxy-Search-Execute")
 	defer sp.End()
-	log := log.Ctx(ctx).With(zap.Int64("nq", t.SearchRequest.GetNq()))
+	log := log.Ctx(ctx).WithLazy(zap.Int64("nq", t.SearchRequest.GetNq()))
 
 	tr := timerecord.NewTimeRecorder(fmt.Sprintf("proxy execute search %d", t.ID()))
 	defer tr.CtxElapse(ctx, "done")
@@ -554,7 +575,7 @@ func (t *searchTask) Execute(ctx context.Context) error {
 	return nil
 }
 
-func (t *searchTask) reduceResults(ctx context.Context, toReduceResults []*internalpb.SearchResults, nq, topK int64, offset int64, queryInfo *planpb.QueryInfo) (*milvuspb.SearchResults, error) {
+func (t *searchTask) reduceResults(ctx context.Context, toReduceResults []*internalpb.SearchResults, nq, topK int64, offset int64, queryInfo *planpb.QueryInfo, isAdvance bool) (*milvuspb.SearchResults, error) {
 	metricType := ""
 	if len(toReduceResults) >= 1 {
 		metricType = toReduceResults[0].GetMetricType()
@@ -585,8 +606,8 @@ func (t *searchTask) reduceResults(ctx context.Context, toReduceResults []*inter
 		return nil, err
 	}
 	var result *milvuspb.SearchResults
-	result, err = reduceSearchResult(ctx, NewReduceSearchResultInfo(validSearchResults, nq, topK,
-		metricType, primaryFieldSchema.DataType, offset, queryInfo))
+	result, err = reduceSearchResult(ctx, validSearchResults, reduce.NewReduceSearchResultInfo(nq, topK).WithMetricType(metricType).WithPkType(primaryFieldSchema.GetDataType()).
+		WithOffset(offset).WithGroupByField(queryInfo.GetGroupByFieldId()).WithGroupSize(queryInfo.GetGroupSize()).WithAdvance(isAdvance))
 	if err != nil {
 		log.Warn("failed to reduce search results", zap.Error(err))
 		return nil, err
@@ -647,7 +668,6 @@ func (t *searchTask) PostExecute(ctx context.Context) error {
 				multipleInternalResults[reqIndex] = append(multipleInternalResults[reqIndex], internalResults)
 			}
 		}
-
 		multipleMilvusResults := make([]*milvuspb.SearchResults, len(t.SearchRequest.GetSubReqs()))
 		for index, internalResults := range multipleInternalResults {
 			subReq := t.SearchRequest.GetSubReqs()[index]
@@ -656,7 +676,7 @@ func (t *searchTask) PostExecute(ctx context.Context) error {
 			if len(internalResults) >= 1 {
 				metricType = internalResults[0].GetMetricType()
 			}
-			result, err := t.reduceResults(t.ctx, internalResults, subReq.GetNq(), subReq.GetTopk(), subReq.GetOffset(), t.queryInfos[index])
+			result, err := t.reduceResults(t.ctx, internalResults, subReq.GetNq(), subReq.GetTopk(), subReq.GetOffset(), t.queryInfos[index], true)
 			if err != nil {
 				return err
 			}
@@ -667,13 +687,16 @@ func (t *searchTask) PostExecute(ctx context.Context) error {
 		t.result, err = rankSearchResultData(ctx, t.SearchRequest.GetNq(),
 			t.rankParams,
 			primaryFieldSchema.GetDataType(),
-			multipleMilvusResults)
+			multipleMilvusResults,
+			t.SearchRequest.GetGroupByFieldId(),
+			t.SearchRequest.GetGroupSize(),
+			t.groupScorer)
 		if err != nil {
 			log.Warn("rank search result failed", zap.Error(err))
 			return err
 		}
 	} else {
-		t.result, err = t.reduceResults(t.ctx, toReduceResults, t.SearchRequest.Nq, t.SearchRequest.GetTopk(), t.SearchRequest.GetOffset(), t.queryInfos[0])
+		t.result, err = t.reduceResults(t.ctx, toReduceResults, t.SearchRequest.GetNq(), t.SearchRequest.GetTopk(), t.SearchRequest.GetOffset(), t.queryInfos[0], false)
 		if err != nil {
 			return err
 		}
@@ -914,7 +937,7 @@ func decodeSearchResults(ctx context.Context, searchResults []*internalpb.Search
 	return results, nil
 }
 
-func checkSearchResultData(data *schemapb.SearchResultData, nq int64, topk int64) error {
+func checkSearchResultData(data *schemapb.SearchResultData, nq int64, topk int64, pkHitNum int) error {
 	if data.NumQueries != nq {
 		return fmt.Errorf("search result's nq(%d) mis-match with %d", data.NumQueries, nq)
 	}
@@ -922,7 +945,6 @@ func checkSearchResultData(data *schemapb.SearchResultData, nq int64, topk int64
 		return fmt.Errorf("search result's topk(%d) mis-match with %d", data.TopK, topk)
 	}
 
-	pkHitNum := typeutil.GetSizeOfIDs(data.GetIds())
 	if len(data.Scores) != pkHitNum {
 		return fmt.Errorf("search result's score length invalid, score length=%d, expectedLength=%d",
 			len(data.Scores), pkHitNum)

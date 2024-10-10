@@ -1,6 +1,8 @@
 package planparserv2
 
 import (
+	"fmt"
+	"math/rand"
 	"sync"
 	"testing"
 
@@ -171,6 +173,27 @@ func TestExpr_Like(t *testing.T) {
 	//for _, exprStr := range unsupported {
 	//	assertInvalidExpr(t, helper, exprStr)
 	//}
+}
+
+func TestExpr_TextMatch(t *testing.T) {
+	schema := newTestSchema()
+	helper, err := typeutil.CreateSchemaHelper(schema)
+	assert.NoError(t, err)
+
+	exprStrs := []string{
+		`TextMatch(VarCharField, "query")`,
+	}
+	for _, exprStr := range exprStrs {
+		assertValidExpr(t, helper, exprStr)
+	}
+
+	unsupported := []string{
+		`TextMatch(not_exist, "query")`,
+		`TextMatch(BoolField, "query")`,
+	}
+	for _, exprStr := range unsupported {
+		assertInvalidExpr(t, helper, exprStr)
+	}
 }
 
 func TestExpr_BinaryRange(t *testing.T) {
@@ -1031,13 +1054,14 @@ c'`,
 		`A == "\中国"`,
 	}
 	for _, expr = range invalidExprs {
-		_, err = CreateSearchPlan(schema, expr, "FloatVectorField", &planpb.QueryInfo{
+		plan, err := CreateSearchPlan(schema, expr, "FloatVectorField", &planpb.QueryInfo{
 			Topk:         0,
 			MetricType:   "",
 			SearchParams: "",
 			RoundDecimal: 0,
 		})
 		assert.Error(t, err)
+		fmt.Println(plan)
 	}
 }
 
@@ -1266,5 +1290,104 @@ func Test_ArrayLength(t *testing.T) {
 			RoundDecimal: 0,
 		})
 		assert.Error(t, err, expr)
+	}
+}
+
+func TestConcurrency(t *testing.T) {
+	schemaHelper := newTestSchemaHelper(t)
+
+	wg := sync.WaitGroup{}
+	wg.Add(10)
+
+	for i := 0; i < 10; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				r := handleExpr(schemaHelper, fmt.Sprintf("array_length(ArrayField) == %d", j))
+				err := getError(r)
+				assert.NoError(t, err)
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
+func BenchmarkPlanCache(b *testing.B) {
+	schema := newTestSchema()
+	schemaHelper, err := typeutil.CreateSchemaHelper(schema)
+	require.NoError(b, err)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		r := handleExpr(schemaHelper, "array_length(ArrayField) == 10")
+		err := getError(r)
+		assert.NoError(b, err)
+	}
+}
+
+func BenchmarkNoPlanCache(b *testing.B) {
+	schema := newTestSchema()
+	schemaHelper, err := typeutil.CreateSchemaHelper(schema)
+	require.NoError(b, err)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		r := handleExpr(schemaHelper, fmt.Sprintf("array_length(ArrayField) == %d", i))
+		err := getError(r)
+		assert.NoError(b, err)
+	}
+}
+
+func randomChineseString(length int) string {
+	min := 0x4e00
+	max := 0x9fa5
+
+	result := make([]rune, length)
+	for i := 0; i < length; i++ {
+		result[i] = rune(rand.Intn(max-min+1) + min)
+	}
+
+	return string(result)
+}
+
+func BenchmarkWithString(b *testing.B) {
+	schema := newTestSchema()
+	schemaHelper, err := typeutil.CreateSchemaHelper(schema)
+	require.NoError(b, err)
+
+	expr := ""
+	for i := 0; i < 100; i++ {
+		expr += fmt.Sprintf(`"%s",`, randomChineseString(rand.Intn(100)))
+	}
+	expr = "StringField in [" + expr + "]"
+
+	for i := 0; i < b.N; i++ {
+		plan, err := CreateSearchPlan(schemaHelper, expr, "FloatVectorField", &planpb.QueryInfo{
+			Topk:         0,
+			MetricType:   "",
+			SearchParams: "",
+			RoundDecimal: 0,
+		})
+		assert.NoError(b, err)
+		assert.NotNil(b, plan)
+	}
+}
+
+func Test_convertHanToASCII(t *testing.T) {
+	type testcase struct {
+		source string
+		target string
+	}
+	testcases := []testcase{
+		{`A in ["中国"]`, `A in ["\u4e2d\u56fd"]`},
+		{`A in ["\中国"]`, `A in ["\中国"]`},
+		{`A in ["\\中国"]`, `A in ["\\\u4e2d\u56fd"]`},
+	}
+
+	for _, c := range testcases {
+		assert.Equal(t, c.target, convertHanToASCII(c.source))
 	}
 }

@@ -26,6 +26,7 @@ import (
 type CompactionTask interface {
 	Process() bool
 	BuildCompactionRequest() (*datapb.CompactionPlan, error)
+	GetSlotUsage() int64
 
 	GetTriggerID() UniqueID
 	GetPlanID() UniqueID
@@ -86,6 +87,12 @@ func setTimeoutInSeconds(dur int32) compactionTaskOpt {
 func setResultSegments(segments []int64) compactionTaskOpt {
 	return func(task *datapb.CompactionTask) {
 		task.ResultSegments = segments
+	}
+}
+
+func setTmpSegments(segments []int64) compactionTaskOpt {
+	return func(task *datapb.CompactionTask) {
+		task.TmpSegments = segments
 	}
 }
 

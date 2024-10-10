@@ -25,6 +25,7 @@ import (
 	"github.com/samber/lo"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus/internal/datacoord/allocator"
@@ -33,6 +34,7 @@ import (
 	"github.com/milvus-io/milvus/pkg/common"
 	"github.com/milvus-io/milvus/pkg/log"
 	"github.com/milvus-io/milvus/pkg/util/merr"
+	"github.com/milvus-io/milvus/pkg/util/paramtable"
 )
 
 var _ CompactionTask = (*l0CompactionTask)(nil)
@@ -46,6 +48,18 @@ type l0CompactionTask struct {
 	allocator allocator.Allocator
 	sessions  session.DataNodeManager
 	meta      CompactionMeta
+
+	slotUsage int64
+}
+
+func newL0CompactionTask(t *datapb.CompactionTask, allocator allocator.Allocator, meta CompactionMeta, session session.DataNodeManager) *l0CompactionTask {
+	return &l0CompactionTask{
+		CompactionTask: t,
+		allocator:      allocator,
+		meta:           meta,
+		sessions:       session,
+		slotUsage:      paramtable.Get().DataCoordCfg.L0DeleteCompactionSlotUsage.GetAsInt64(),
+	}
 }
 
 // Note: return True means exit this state machine.
@@ -253,27 +267,7 @@ func (t *l0CompactionTask) CleanLogPath() {
 }
 
 func (t *l0CompactionTask) ShadowClone(opts ...compactionTaskOpt) *datapb.CompactionTask {
-	taskClone := &datapb.CompactionTask{
-		PlanID:           t.GetPlanID(),
-		TriggerID:        t.GetTriggerID(),
-		State:            t.GetState(),
-		StartTime:        t.GetStartTime(),
-		EndTime:          t.GetEndTime(),
-		TimeoutInSeconds: t.GetTimeoutInSeconds(),
-		Type:             t.GetType(),
-		CollectionTtl:    t.CollectionTtl,
-		CollectionID:     t.GetCollectionID(),
-		PartitionID:      t.GetPartitionID(),
-		Channel:          t.GetChannel(),
-		InputSegments:    t.GetInputSegments(),
-		ResultSegments:   t.GetResultSegments(),
-		TotalRows:        t.TotalRows,
-		Schema:           t.Schema,
-		NodeID:           t.GetNodeID(),
-		FailReason:       t.GetFailReason(),
-		RetryTimes:       t.GetRetryTimes(),
-		Pos:              t.GetPos(),
-	}
+	taskClone := proto.Clone(t).(*datapb.CompactionTask)
 	for _, opt := range opts {
 		opt(taskClone)
 	}
@@ -295,7 +289,7 @@ func (t *l0CompactionTask) BuildCompactionRequest() (*datapb.CompactionPlan, err
 		TotalRows:        t.GetTotalRows(),
 		Schema:           t.GetSchema(),
 		BeginLogID:       beginLogID,
-		SlotUsage:        Params.DataCoordCfg.L0DeleteCompactionSlotUsage.GetAsInt64(),
+		SlotUsage:        t.GetSlotUsage(),
 	}
 
 	log := log.With(zap.Int64("taskID", t.GetTriggerID()), zap.Int64("planID", plan.GetPlanID()))
@@ -311,6 +305,7 @@ func (t *l0CompactionTask) BuildCompactionRequest() (*datapb.CompactionPlan, err
 			Level:         segInfo.GetLevel(),
 			InsertChannel: segInfo.GetInsertChannel(),
 			Deltalogs:     segInfo.GetDeltalogs(),
+			IsSorted:      segInfo.GetIsSorted(),
 		})
 	}
 
@@ -347,6 +342,7 @@ func (t *l0CompactionTask) BuildCompactionRequest() (*datapb.CompactionPlan, err
 			Level:               info.GetLevel(),
 			CollectionID:        info.GetCollectionID(),
 			PartitionID:         info.GetPartitionID(),
+			IsSorted:            info.GetIsSorted(),
 		}
 	})
 
@@ -409,7 +405,7 @@ func (t *l0CompactionTask) saveSegmentMeta() error {
 	result := t.result
 	var operators []UpdateOperator
 	for _, seg := range result.GetSegments() {
-		operators = append(operators, AddBinlogsOperator(seg.GetSegmentID(), nil, nil, seg.GetDeltalogs()))
+		operators = append(operators, AddBinlogsOperator(seg.GetSegmentID(), nil, nil, seg.GetDeltalogs(), nil))
 	}
 
 	for _, segID := range t.InputSegments {
@@ -421,4 +417,8 @@ func (t *l0CompactionTask) saveSegmentMeta() error {
 	)
 
 	return t.meta.UpdateSegmentsInfo(operators...)
+}
+
+func (t *l0CompactionTask) GetSlotUsage() int64 {
+	return t.slotUsage
 }

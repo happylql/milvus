@@ -174,6 +174,10 @@ func TestValidateFieldName(t *testing.T) {
 		"",
 		string(longName),
 		"中文",
+		"True",
+		"array_contains",
+		"json_contains_any",
+		"ARRAY_LENGTH",
 	}
 
 	for _, name := range invalidNames {
@@ -734,7 +738,7 @@ func TestFillFieldIDBySchema(t *testing.T) {
 	}
 
 	// length mismatch
-	assert.Error(t, fillFieldIDBySchema(columns, schema))
+	assert.Error(t, fillFieldPropertiesBySchema(columns, schema))
 	schema = &schemapb.CollectionSchema{
 		Fields: []*schemapb.FieldSchema{
 			{
@@ -744,7 +748,7 @@ func TestFillFieldIDBySchema(t *testing.T) {
 			},
 		},
 	}
-	assert.NoError(t, fillFieldIDBySchema(columns, schema))
+	assert.NoError(t, fillFieldPropertiesBySchema(columns, schema))
 	assert.Equal(t, "TestFillFieldIDBySchema", columns[0].FieldName)
 	assert.Equal(t, schemapb.DataType_Int64, columns[0].Type)
 	assert.Equal(t, int64(1), columns[0].FieldId)
@@ -2521,6 +2525,12 @@ func TestValidateLoadFieldsList(t *testing.T) {
 		DataType:  schemapb.DataType_JSON,
 		IsDynamic: true,
 	}
+	clusteringKeyField := &schemapb.FieldSchema{
+		FieldID:         common.StartOfUserFieldID + 5,
+		Name:            common.MetaFieldName,
+		DataType:        schemapb.DataType_Int32,
+		IsClusteringKey: true,
+	}
 
 	addSkipLoadAttr := func(f *schemapb.FieldSchema, flag bool) *schemapb.FieldSchema {
 		result := typeutil.Clone(f)
@@ -2544,6 +2554,7 @@ func TestValidateLoadFieldsList(t *testing.T) {
 					partitionKeyField,
 					vectorField,
 					dynamicField,
+					clusteringKeyField,
 				},
 			},
 			expectErr: false,
@@ -2592,6 +2603,23 @@ func TestValidateLoadFieldsList(t *testing.T) {
 					partitionKeyField,
 					addSkipLoadAttr(vectorField, true),
 					dynamicField,
+				},
+			},
+			expectErr: true,
+		},
+		{
+			tag: "clustering_key_not_loaded",
+			schema: &schemapb.CollectionSchema{
+				EnableDynamicField: true,
+				Fields: []*schemapb.FieldSchema{
+					rowIDField,
+					timestampField,
+					pkField,
+					scalarField,
+					partitionKeyField,
+					vectorField,
+					dynamicField,
+					addSkipLoadAttr(clusteringKeyField, true),
 				},
 			},
 			expectErr: true,

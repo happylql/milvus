@@ -2,19 +2,41 @@ package planparserv2
 
 import (
 	"fmt"
+	"strings"
+	"time"
+	"unicode"
 
 	"github.com/antlr/antlr4/runtime/Go/antlr"
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/samber/lo"
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/proto/planpb"
 	"github.com/milvus-io/milvus/pkg/log"
+	"github.com/milvus-io/milvus/pkg/util/merr"
 	"github.com/milvus-io/milvus/pkg/util/typeutil"
 )
 
+// exprParseKey is used to cache the parse result. Currently only collectionName is used besides expr string, which implies
+// that the same collectionName will have the same schema thus the same parse result. In the future, if there is case that the
+// schema changes without changing the collectionName, we need to change the cache key.
+type exprParseKey struct {
+	collectionName string
+	expr           string
+}
+
+var exprCache = expirable.NewLRU[exprParseKey, any](256, nil, time.Minute*10)
+
 func handleExpr(schema *typeutil.SchemaHelper, exprStr string) interface{} {
-	return handleExprWithErrorListener(schema, exprStr, &errorListenerImpl{})
+	parseKey := exprParseKey{collectionName: schema.GetCollectionName(), expr: exprStr}
+	val, ok := exprCache.Get(parseKey)
+	if !ok {
+		val = handleExprWithErrorListener(schema, exprStr, &errorListenerImpl{})
+		// Note that the errors will be cached, too.
+		exprCache.Add(parseKey, val)
+	}
+	return val
 }
 
 func handleExprWithErrorListener(schema *typeutil.SchemaHelper, exprStr string, errorListener errorListener) interface{} {
@@ -106,7 +128,39 @@ func CreateRetrievePlan(schema *typeutil.SchemaHelper, exprStr string) (*planpb.
 	return planNode, nil
 }
 
+func convertHanToASCII(s string) string {
+	var builder strings.Builder
+	builder.Grow(len(s) * 6)
+	skipCur := false
+	n := len(s)
+	for i, r := range s {
+		if skipCur {
+			builder.WriteRune(r)
+			skipCur = false
+			continue
+		}
+		if r == '\\' {
+			if i+1 < n && !isEscapeCh(s[i+1]) {
+				return s
+			}
+			skipCur = true
+			builder.WriteRune(r)
+			continue
+		}
+
+		if unicode.Is(unicode.Han, r) {
+			builder.WriteString(formatUnicode(uint32(r)))
+		} else {
+			builder.WriteRune(r)
+		}
+	}
+
+	return builder.String()
+}
+
 func CreateSearchPlan(schema *typeutil.SchemaHelper, exprStr string, vectorFieldName string, queryInfo *planpb.QueryInfo) (*planpb.PlanNode, error) {
+	exprStr = convertHanToASCII(exprStr)
+
 	parse := func() (*planpb.Expr, error) {
 		if len(exprStr) <= 0 {
 			return nil, nil
@@ -123,6 +177,10 @@ func CreateSearchPlan(schema *typeutil.SchemaHelper, exprStr string, vectorField
 	if err != nil {
 		log.Info("CreateSearchPlan failed", zap.Error(err))
 		return nil, err
+	}
+	// plan ok with schema, check ann field
+	if !schema.IsFieldLoaded(vectorField.GetFieldID()) {
+		return nil, merr.WrapErrParameterInvalidMsg("ann field \"%s\" not loaded", vectorFieldName)
 	}
 	fieldID := vectorField.FieldID
 	dataType := vectorField.DataType

@@ -19,6 +19,7 @@ func NewSyncTask() *SyncTask {
 		insertBinlogs: make(map[int64]*datapb.FieldBinlog),
 		statsBinlogs:  make(map[int64]*datapb.FieldBinlog),
 		deltaBinlog:   &datapb.FieldBinlog{},
+		bm25Binlogs:   make(map[int64]*datapb.FieldBinlog),
 		segmentData:   make(map[string][]byte),
 		binlogBlobs:   make(map[int64]*storage.Blob),
 	}
@@ -114,5 +115,10 @@ func (t *SyncTask) WithBatchSize(batchSize int64) *SyncTask {
 
 func (t *SyncTask) WithLevel(level datapb.SegmentLevel) *SyncTask {
 	t.level = level
+	return t
+}
+
+func (t *SyncTask) WithDataSource(source string) *SyncTask {
+	t.dataSource = source
 	return t
 }

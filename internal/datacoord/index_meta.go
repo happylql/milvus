@@ -23,20 +23,22 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/golang/protobuf/proto"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/samber/lo"
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/metastore"
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
+	"github.com/milvus-io/milvus/internal/proto/workerpb"
 	"github.com/milvus-io/milvus/pkg/common"
 	"github.com/milvus-io/milvus/pkg/log"
 	"github.com/milvus-io/milvus/pkg/metrics"
 	"github.com/milvus-io/milvus/pkg/util/indexparamcheck"
+	"github.com/milvus-io/milvus/pkg/util/indexparams"
 	"github.com/milvus-io/milvus/pkg/util/timerecord"
 	"github.com/milvus-io/milvus/pkg/util/typeutil"
 )
@@ -190,25 +192,26 @@ func checkParams(fieldIndex *model.Index, req *indexpb.CreateIndexRequest) bool 
 	}
 
 	useAutoIndex := false
-	userIndexParamsWithoutMmapKey := make([]*commonpb.KeyValuePair, 0)
+	userIndexParamsWithoutConfigableKey := make([]*commonpb.KeyValuePair, 0)
 	for _, param := range fieldIndex.UserIndexParams {
-		if param.Key == common.MmapEnabledKey {
+		if indexparams.IsConfigableIndexParam(param.Key) {
 			continue
 		}
 		if param.Key == common.IndexTypeKey && param.Value == common.AutoIndexName {
 			useAutoIndex = true
 		}
-		userIndexParamsWithoutMmapKey = append(userIndexParamsWithoutMmapKey, param)
+		userIndexParamsWithoutConfigableKey = append(userIndexParamsWithoutConfigableKey, param)
 	}
 
-	if len(userIndexParamsWithoutMmapKey) != len(req.GetUserIndexParams()) {
+	if len(userIndexParamsWithoutConfigableKey) != len(req.GetUserIndexParams()) {
 		return false
 	}
-	for _, param1 := range userIndexParamsWithoutMmapKey {
+	for _, param1 := range userIndexParamsWithoutConfigableKey {
 		exist := false
 		for i, param2 := range req.GetUserIndexParams() {
 			if param2.Key == param1.Key && param2.Value == param1.Value {
 				exist = true
+				break
 			} else if param1.Key == common.MetricTypeKey && param2.Key == param1.Key && useAutoIndex && !req.GetUserAutoindexMetricTypeSpecified() {
 				// when users use autoindex, metric type is the only thing they can specify
 				// if they do not specify metric type, will use autoindex default metric type
@@ -224,6 +227,7 @@ func checkParams(fieldIndex *model.Index, req *indexpb.CreateIndexRequest) bool 
 					}
 				}
 				exist = true
+				break
 			}
 		}
 		if !exist {
@@ -231,7 +235,24 @@ func checkParams(fieldIndex *model.Index, req *indexpb.CreateIndexRequest) bool 
 			break
 		}
 	}
-
+	// Check whether new index type match old, if not, only
+	// allow autoindex config changed when upgraded to new config
+	// using store meta config to rewrite new config
+	if !notEq && req.GetIsAutoIndex() && useAutoIndex {
+		for _, param1 := range fieldIndex.IndexParams {
+			if param1.Key == common.IndexTypeKey &&
+				indexparamcheck.IsScalarIndexType(param1.Value) {
+				for _, param2 := range req.GetIndexParams() {
+					if param1.Key == param2.Key && param1.Value != param2.Value {
+						req.IndexParams = make([]*commonpb.KeyValuePair, len(fieldIndex.IndexParams))
+						copy(req.IndexParams, fieldIndex.IndexParams)
+						break
+					}
+				}
+			}
+		}
+	}
+	log.Info("final request", zap.Any("create index request", req.String()))
 	return !notEq
 }
 
@@ -253,8 +274,10 @@ func (m *indexMeta) CanCreateIndex(req *indexpb.CreateIndexRequest) (UniqueID, e
 			}
 			errMsg := "at most one distinct index is allowed per field"
 			log.Warn(errMsg,
-				zap.String("source index", fmt.Sprintf("{index_name: %s, field_id: %d, index_params: %v, type_params: %v}", index.IndexName, index.FieldID, index.IndexParams, index.TypeParams)),
-				zap.String("current index", fmt.Sprintf("{index_name: %s, field_id: %d, index_params: %v, type_params: %v}", req.GetIndexName(), req.GetFieldID(), req.GetIndexParams(), req.GetTypeParams())))
+				zap.String("source index", fmt.Sprintf("{index_name: %s, field_id: %d, index_params: %v, user_params: %v, type_params: %v}",
+					index.IndexName, index.FieldID, index.IndexParams, index.UserIndexParams, index.TypeParams)),
+				zap.String("current index", fmt.Sprintf("{index_name: %s, field_id: %d, index_params: %v, user_params: %v, type_params: %v}",
+					req.GetIndexName(), req.GetFieldID(), req.GetIndexParams(), req.GetUserIndexParams(), req.GetTypeParams())))
 			return 0, fmt.Errorf("CreateIndex failed: %s", errMsg)
 		}
 		if req.FieldID == index.FieldID {
@@ -674,11 +697,11 @@ func (m *indexMeta) IsIndexExist(collID, indexID UniqueID) bool {
 }
 
 // UpdateVersion updates the version and nodeID of the index meta, whenever the task is built once, the version will be updated once.
-func (m *indexMeta) UpdateVersion(buildID UniqueID) error {
+func (m *indexMeta) UpdateVersion(buildID, nodeID UniqueID) error {
 	m.Lock()
 	defer m.Unlock()
 
-	log.Debug("IndexCoord metaTable UpdateVersion receive", zap.Int64("buildID", buildID))
+	log.Info("IndexCoord metaTable UpdateVersion receive", zap.Int64("buildID", buildID), zap.Int64("nodeID", nodeID))
 	segIdx, ok := m.buildID2SegmentIndex[buildID]
 	if !ok {
 		return fmt.Errorf("there is no index with buildID: %d", buildID)
@@ -686,13 +709,14 @@ func (m *indexMeta) UpdateVersion(buildID UniqueID) error {
 
 	updateFunc := func(segIdx *model.SegmentIndex) error {
 		segIdx.IndexVersion++
+		segIdx.NodeID = nodeID
 		return m.alterSegmentIndexes([]*model.SegmentIndex{segIdx})
 	}
 
 	return m.updateSegIndexMeta(segIdx, updateFunc)
 }
 
-func (m *indexMeta) FinishTask(taskInfo *indexpb.IndexTaskInfo) error {
+func (m *indexMeta) FinishTask(taskInfo *workerpb.IndexTaskInfo) error {
 	m.Lock()
 	defer m.Unlock()
 
@@ -748,7 +772,7 @@ func (m *indexMeta) DeleteTask(buildID int64) error {
 }
 
 // BuildIndex set the index state to be InProgress. It means IndexNode is building the index.
-func (m *indexMeta) BuildIndex(buildID, nodeID UniqueID) error {
+func (m *indexMeta) BuildIndex(buildID UniqueID) error {
 	m.Lock()
 	defer m.Unlock()
 
@@ -758,7 +782,6 @@ func (m *indexMeta) BuildIndex(buildID, nodeID UniqueID) error {
 	}
 
 	updateFunc := func(segIdx *model.SegmentIndex) error {
-		segIdx.NodeID = nodeID
 		segIdx.IndexState = commonpb.IndexState_InProgress
 
 		err := m.alterSegmentIndexes([]*model.SegmentIndex{segIdx})
@@ -787,6 +810,25 @@ func (m *indexMeta) GetAllSegIndexes() map[int64]*model.SegmentIndex {
 		segIndexes[buildID] = model.CloneSegmentIndex(segIndex)
 	}
 	return segIndexes
+}
+
+// SetStoredIndexFileSizeMetric returns the total index files size of all segment for each collection.
+func (m *indexMeta) SetStoredIndexFileSizeMetric(collections map[UniqueID]*collectionInfo) uint64 {
+	m.RLock()
+	defer m.RUnlock()
+
+	var total uint64
+	metrics.DataCoordStoredIndexFilesSize.Reset()
+
+	for _, segmentIdx := range m.buildID2SegmentIndex {
+		coll, ok := collections[segmentIdx.CollectionID]
+		if ok {
+			metrics.DataCoordStoredIndexFilesSize.WithLabelValues(coll.DatabaseName,
+				fmt.Sprint(segmentIdx.CollectionID), fmt.Sprint(segmentIdx.SegmentID)).Set(float64(segmentIdx.IndexSize))
+			total += segmentIdx.IndexSize
+		}
+	}
+	return total
 }
 
 func (m *indexMeta) RemoveSegmentIndex(collID, partID, segID, indexID, buildID UniqueID) error {
@@ -945,4 +987,18 @@ func (m *indexMeta) AreAllDiskIndex(collectionID int64, schema *schemapb.Collect
 
 	allDiskIndex := len(vectorFields) == len(vectorFieldsWithDiskIndex)
 	return allDiskIndex
+}
+
+func (m *indexMeta) HasIndex(collectionID int64) bool {
+	m.RLock()
+	defer m.RUnlock()
+	indexes, ok := m.indexes[collectionID]
+	if ok {
+		for _, index := range indexes {
+			if !index.IsDeleted {
+				return true
+			}
+		}
+	}
+	return false
 }

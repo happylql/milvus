@@ -81,6 +81,9 @@ class SegmentGrowingImpl : public SegmentGrowing {
         return insert_record_.is_valid_data_exist(field_id);
     };
 
+    void
+    CreateTextIndex(FieldId field_id) override;
+
  public:
     const InsertRecord<>&
     get_insert_record() const {
@@ -243,6 +246,7 @@ class SegmentGrowingImpl : public SegmentGrowing {
                 storage::MmapManager::GetInstance().GetMmapChunkManager();
             mcm->Register(mmap_descriptor_);
         }
+        this->CreateTextIndexes();
     }
 
     ~SegmentGrowingImpl() {
@@ -254,7 +258,7 @@ class SegmentGrowingImpl : public SegmentGrowing {
     }
 
     void
-    mask_with_timestamps(BitsetType& bitset_chunk,
+    mask_with_timestamps(BitsetTypeView& bitset_chunk,
                          Timestamp timestamp) const override;
 
     void
@@ -270,7 +274,7 @@ class SegmentGrowingImpl : public SegmentGrowing {
 
  public:
     void
-    mask_with_delete(BitsetType& bitset,
+    mask_with_delete(BitsetTypeView& bitset,
                      int64_t ins_barrier,
                      Timestamp timestamp) const override;
 
@@ -343,6 +347,16 @@ class SegmentGrowingImpl : public SegmentGrowing {
     get_timestamps() const override {
         return insert_record_.timestamps_;
     }
+
+ private:
+    void
+    AddTexts(FieldId field_id,
+             const std::string* texts,
+             size_t n,
+             int64_t offset_begin);
+
+    void
+    CreateTextIndexes();
 
  private:
     storage::MmapChunkDescriptorPtr mmap_descriptor_ = nullptr;

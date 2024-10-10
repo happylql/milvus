@@ -92,6 +92,7 @@ typedef struct CStorageConfig {
     bool useIAM;
     bool useVirtualHost;
     int64_t requestTimeoutMs;
+    const char* gcp_credential_json;
 } CStorageConfig;
 
 typedef struct CMmapConfig {
@@ -100,6 +101,7 @@ typedef struct CMmapConfig {
     uint64_t disk_limit;
     uint64_t fix_file_size;
     bool growing_enable_mmap;
+    bool scalar_index_enable_mmap;
 } CMmapConfig;
 
 typedef struct CTraceConfig {

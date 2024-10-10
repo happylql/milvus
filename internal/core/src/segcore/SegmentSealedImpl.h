@@ -34,6 +34,7 @@
 #include "sys/mman.h"
 #include "common/Types.h"
 #include "common/IndexMeta.h"
+#include "index/TextMatchIndex.h"
 
 namespace milvus::segcore {
 
@@ -43,7 +44,8 @@ class SegmentSealedImpl : public SegmentSealed {
                                IndexMetaPtr index_meta,
                                const SegcoreConfig& segcore_config,
                                int64_t segment_id,
-                               bool TEST_skip_index_for_retrieve = false);
+                               bool TEST_skip_index_for_retrieve = false,
+                               bool is_sorted_by_pk = false);
     ~SegmentSealedImpl() override;
     void
     LoadIndex(const LoadIndexInfo& info) override;
@@ -90,6 +92,13 @@ class SegmentSealedImpl : public SegmentSealed {
     void
     RemoveFieldFile(const FieldId field_id);
 
+    void
+    CreateTextIndex(FieldId field_id) override;
+
+    void
+    LoadTextIndex(FieldId field_id,
+                  std::unique_ptr<index::TextMatchIndex> index) override;
+
  public:
     size_t
     GetMemoryUsageInBytes() const override {
@@ -104,6 +113,18 @@ class SegmentSealedImpl : public SegmentSealed {
 
     const Schema&
     get_schema() const override;
+
+    std::vector<SegOffset>
+    search_pk(const PkType& pk, Timestamp timestamp) const;
+
+    std::vector<SegOffset>
+    search_pk(const PkType& pk, int64_t insert_barrier) const;
+
+    std::shared_ptr<DeletedRecord::TmpBitmap>
+    get_deleted_bitmap_s(int64_t del_barrier,
+                         int64_t insert_barrier,
+                         DeletedRecord& delete_record,
+                         Timestamp query_timestamp) const;
 
     std::unique_ptr<DataArray>
     get_vector(FieldId field_id, const int64_t* ids, int64_t count) const;
@@ -142,9 +163,7 @@ class SegmentSealedImpl : public SegmentSealed {
            const Timestamp* timestamps) override;
 
     std::pair<std::vector<OffsetMap::OffsetType>, bool>
-    find_first(int64_t limit, const BitsetType& bitset) const override {
-        return insert_record_.pk2offset_->find_first(limit, bitset);
-    }
+    find_first(int64_t limit, const BitsetType& bitset) const override;
 
     // Calculate: output[i] = Vec[seg_offset[i]]
     // where Vec is determined from field_offset
@@ -257,7 +276,7 @@ class SegmentSealedImpl : public SegmentSealed {
     }
 
     void
-    mask_with_timestamps(BitsetType& bitset_chunk,
+    mask_with_timestamps(BitsetTypeView& bitset_chunk,
                          Timestamp timestamp) const override;
 
     void
@@ -269,7 +288,7 @@ class SegmentSealedImpl : public SegmentSealed {
                   SearchResult& output) const override;
 
     void
-    mask_with_delete(BitsetType& bitset,
+    mask_with_delete(BitsetTypeView& bitset,
                      int64_t ins_barrier,
                      Timestamp timestamp) const override;
 
@@ -343,6 +362,9 @@ class SegmentSealedImpl : public SegmentSealed {
     // for sparse vector unit test only! Once a type of sparse index that
     // doesn't has raw data is added, this should be removed.
     bool TEST_skip_index_for_retrieve_ = false;
+
+    // whether the segment is sorted by the pk
+    bool is_sorted_by_pk_ = false;
 };
 
 inline SegmentSealedUPtr
@@ -351,12 +373,14 @@ CreateSealedSegment(
     IndexMetaPtr index_meta = nullptr,
     int64_t segment_id = -1,
     const SegcoreConfig& segcore_config = SegcoreConfig::default_config(),
-    bool TEST_skip_index_for_retrieve = false) {
+    bool TEST_skip_index_for_retrieve = false,
+    bool is_sorted_by_pk = false) {
     return std::make_unique<SegmentSealedImpl>(schema,
                                                index_meta,
                                                segcore_config,
                                                segment_id,
-                                               TEST_skip_index_for_retrieve);
+                                               TEST_skip_index_for_retrieve,
+                                               is_sorted_by_pk);
 }
 
 }  // namespace milvus::segcore

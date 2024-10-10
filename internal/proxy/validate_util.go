@@ -353,7 +353,12 @@ func (v *validateUtil) fillWithNullValue(field *schemapb.FieldData, fieldSchema 
 			}
 
 		case *schemapb.ScalarField_ArrayData:
-			// Todo: support it
+			if fieldSchema.GetNullable() {
+				sd.ArrayData.Data, err = fillWithNullValueImpl(sd.ArrayData.Data, field.GetValidData())
+				if err != nil {
+					return err
+				}
+			}
 
 		case *schemapb.ScalarField_JsonData:
 			if fieldSchema.GetNullable() {
@@ -391,10 +396,6 @@ func (v *validateUtil) fillWithDefaultValue(field *schemapb.FieldData, fieldSche
 				return err
 			}
 
-			if !fieldSchema.GetNullable() {
-				field.ValidData = []bool{}
-			}
-
 		case *schemapb.ScalarField_IntData:
 			if len(field.GetValidData()) != numRows {
 				msg := fmt.Sprintf("the length of valid_data of field(%s) is wrong", field.GetFieldName())
@@ -406,10 +407,6 @@ func (v *validateUtil) fillWithDefaultValue(field *schemapb.FieldData, fieldSche
 				return err
 			}
 
-			if !fieldSchema.GetNullable() {
-				field.ValidData = []bool{}
-			}
-
 		case *schemapb.ScalarField_LongData:
 			if len(field.GetValidData()) != numRows {
 				msg := fmt.Sprintf("the length of valid_data of field(%s) is wrong", field.GetFieldName())
@@ -419,9 +416,6 @@ func (v *validateUtil) fillWithDefaultValue(field *schemapb.FieldData, fieldSche
 			sd.LongData.Data, err = fillWithDefaultValueImpl(sd.LongData.Data, defaultValue, field.GetValidData())
 			if err != nil {
 				return err
-			}
-			if !fieldSchema.GetNullable() {
-				field.ValidData = []bool{}
 			}
 
 		case *schemapb.ScalarField_FloatData:
@@ -435,10 +429,6 @@ func (v *validateUtil) fillWithDefaultValue(field *schemapb.FieldData, fieldSche
 				return err
 			}
 
-			if !fieldSchema.GetNullable() {
-				field.ValidData = []bool{}
-			}
-
 		case *schemapb.ScalarField_DoubleData:
 			if len(field.GetValidData()) != numRows {
 				msg := fmt.Sprintf("the length of valid_data of field(%s) is wrong", field.GetFieldName())
@@ -450,10 +440,6 @@ func (v *validateUtil) fillWithDefaultValue(field *schemapb.FieldData, fieldSche
 				return err
 			}
 
-			if !fieldSchema.GetNullable() {
-				field.ValidData = []bool{}
-			}
-
 		case *schemapb.ScalarField_StringData:
 			if len(field.GetValidData()) != numRows {
 				msg := fmt.Sprintf("the length of valid_data of field(%s) is wrong", field.GetFieldName())
@@ -463,10 +449,6 @@ func (v *validateUtil) fillWithDefaultValue(field *schemapb.FieldData, fieldSche
 			sd.StringData.Data, err = fillWithDefaultValueImpl(sd.StringData.Data, defaultValue, field.GetValidData())
 			if err != nil {
 				return err
-			}
-
-			if !fieldSchema.GetNullable() {
-				field.ValidData = []bool{}
 			}
 
 		case *schemapb.ScalarField_ArrayData:
@@ -485,10 +467,6 @@ func (v *validateUtil) fillWithDefaultValue(field *schemapb.FieldData, fieldSche
 				return err
 			}
 
-			if !fieldSchema.GetNullable() {
-				field.ValidData = []bool{}
-			}
-
 		default:
 			return merr.WrapErrParameterInvalidMsg(fmt.Sprintf("undefined data type:%s", field.Type.String()))
 		}
@@ -499,6 +477,18 @@ func (v *validateUtil) fillWithDefaultValue(field *schemapb.FieldData, fieldSche
 
 	default:
 		return merr.WrapErrParameterInvalidMsg(fmt.Sprintf("undefined data type:%s", field.Type.String()))
+	}
+
+	if !typeutil.IsVectorType(field.Type) {
+		if fieldSchema.GetNullable() {
+			validData := make([]bool, numRows)
+			for i := range validData {
+				validData[i] = true
+			}
+			field.ValidData = validData
+		} else {
+			field.ValidData = []bool{}
+		}
 	}
 
 	err = checkValidData(field, fieldSchema, numRows)
@@ -661,7 +651,7 @@ func (v *validateUtil) checkVarCharFieldData(field *schemapb.FieldData, fieldSch
 
 func (v *validateUtil) checkJSONFieldData(field *schemapb.FieldData, fieldSchema *schemapb.FieldSchema) error {
 	jsonArray := field.GetScalars().GetJsonData().GetData()
-	if jsonArray == nil {
+	if jsonArray == nil && fieldSchema.GetDefaultValue() == nil && !fieldSchema.GetNullable() {
 		msg := fmt.Sprintf("json field '%v' is illegal, array type mismatch", field.GetFieldName())
 		return merr.WrapErrParameterInvalid("need json array", "got nil", msg)
 	}
@@ -824,7 +814,7 @@ func (v *validateUtil) checkArrayElement(array *schemapb.ArrayArray, field *sche
 			}
 		}
 	case schemapb.DataType_VarChar, schemapb.DataType_String:
-		for _, row := range array.GetData() {
+		for rowCnt, row := range array.GetData() {
 			if row.GetData() == nil {
 				return merr.WrapErrParameterInvalid("string array", "nil array", "insert data does not match")
 			}
@@ -832,6 +822,17 @@ func (v *validateUtil) checkArrayElement(array *schemapb.ArrayArray, field *sche
 			if actualType != reflect.TypeOf((*schemapb.ScalarField_StringData)(nil)) {
 				return merr.WrapErrParameterInvalid("string array",
 					fmt.Sprintf("%s array", actualType.String()), "insert data does not match")
+			}
+			if v.checkMaxLen {
+				maxLength, err := parameterutil.GetMaxLength(field)
+				if err != nil {
+					return err
+				}
+				if i, ok := verifyLengthPerRow(row.GetStringData().GetData(), maxLength); !ok {
+					return merr.WrapErrParameterInvalidMsg("length of %s array field \"%s\" exceeds max length, row number: %d, array index: %d, length: %d, max length: %d",
+						field.GetDataType().String(), field.GetName(), rowCnt, i, len(row.GetStringData().GetData()[i]), maxLength,
+					)
+				}
 			}
 		}
 	}
@@ -853,19 +854,6 @@ func (v *validateUtil) checkArrayFieldData(field *schemapb.FieldData, fieldSchem
 		}
 		if err := verifyCapacityPerRow(data.GetData(), maxCapacity, fieldSchema.GetElementType()); err != nil {
 			return err
-		}
-	}
-	if typeutil.IsStringType(data.GetElementType()) && v.checkMaxLen {
-		maxLength, err := parameterutil.GetMaxLength(fieldSchema)
-		if err != nil {
-			return err
-		}
-		for rowCnt, row := range data.GetData() {
-			if i, ok := verifyLengthPerRow(row.GetStringData().GetData(), maxLength); !ok {
-				return merr.WrapErrParameterInvalidMsg("length of %s array field \"%s\" exceeds max length, row number: %d, array index: %d, length: %d, max length: %d",
-					fieldSchema.GetDataType().String(), fieldSchema.GetName(), rowCnt, i, len(row.GetStringData().GetData()[i]), maxLength,
-				)
-			}
 		}
 	}
 	return v.checkArrayElement(data, fieldSchema)

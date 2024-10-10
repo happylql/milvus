@@ -139,7 +139,7 @@ PhyTermFilterExpr::CanSkipSegment() {
     if (segment_->type() == SegmentType::Sealed &&
         skip_index.CanSkipBinaryRange<T>(field_id_, 0, min, max, true, true)) {
         cached_bits_.resize(active_count_, false);
-        cached_offsets_inited_ = true;
+        cached_bits_inited_ = true;
         return true;
     }
     return false;
@@ -181,12 +181,12 @@ PhyTermFilterExpr::InitPkCacheOffset() {
         auto _offset = (int64_t)offset.get();
         cached_bits_[_offset] = true;
     }
-    cached_offsets_inited_ = true;
+    cached_bits_inited_ = true;
 }
 
 VectorPtr
 PhyTermFilterExpr::ExecPkTermImpl() {
-    if (!cached_offsets_inited_) {
+    if (!cached_bits_inited_) {
         InitPkCacheOffset();
     }
 
@@ -207,15 +207,7 @@ PhyTermFilterExpr::ExecPkTermImpl() {
         res[i] = cached_bits_[current_data_chunk_pos_++];
     }
 
-    if (use_cache_offsets_) {
-        auto cache_bits_copy = cached_bits_.clone();
-        std::vector<VectorPtr> vecs{
-            res_vec,
-            std::make_shared<ColumnVector>(std::move(cache_bits_copy))};
-        return std::make_shared<RowVector>(vecs);
-    } else {
-        return res_vec;
-    }
+    return res_vec;
 }
 
 template <typename ValueType>
@@ -312,6 +304,7 @@ PhyTermFilterExpr::ExecTermArrayFieldInVariable() {
 
     if (term_set.empty()) {
         res.reset();
+        MoveCursor();
         return res_vec;
     }
 
@@ -320,11 +313,6 @@ PhyTermFilterExpr::ExecTermArrayFieldInVariable() {
                                 TargetBitmapView res,
                                 int index,
                                 const std::unordered_set<ValueType>& term_set) {
-        if (term_set.empty()) {
-            for (int i = 0; i < size; ++i) {
-                res[i] = false;
-            }
-        }
         for (int i = 0; i < size; ++i) {
             if (index >= data[i].length()) {
                 res[i] = false;
@@ -422,9 +410,8 @@ PhyTermFilterExpr::ExecTermJsonFieldInVariable() {
     }
 
     if (term_set.empty()) {
-        for (size_t i = 0; i < real_batch_size; ++i) {
-            res[i] = false;
-        }
+        res.reset();
+        MoveCursor();
         return res_vec;
     }
 
@@ -489,14 +476,12 @@ PhyTermFilterExpr::ExecVisitorImplForIndex() {
 
     std::vector<IndexInnerType> vals;
     for (auto& val : expr_->vals_) {
-        auto converted_val = GetValueFromProto<T>(val);
         // Integral overflow process
-        if constexpr (std::is_integral_v<T>) {
-            if (milvus::query::out_of_range<T>(converted_val)) {
-                continue;
-            }
+        bool overflowed = false;
+        auto converted_val = GetValueFromProtoWithOverflow<T>(val, overflowed);
+        if (!overflowed) {
+            vals.emplace_back(converted_val);
         }
-        vals.emplace_back(converted_val);
     }
     auto execute_sub_batch = [](Index* index_ptr,
                                 const std::vector<IndexInnerType>& vals) {

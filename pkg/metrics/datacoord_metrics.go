@@ -51,6 +51,7 @@ var (
 		}, []string{
 			segmentStateLabelName,
 			segmentLevelLabelName,
+			segmentIsSortedLabelName,
 		})
 
 	// DataCoordCollectionNum records the num of collections managed by DataCoord.
@@ -73,13 +74,16 @@ var (
 			collectionIDLabelName,
 		})
 
-	DataCoordRateStoredL0Segment = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
+	DataCoordL0DeleteEntriesNum = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.DataCoordRole,
-			Name:      "store_level0_segment_rate",
-			Help:      "stored l0 segment rate",
-		}, []string{})
+			Name:      "l0_delete_entries_num",
+			Help:      "Delete entries number of Level zero segment",
+		}, []string{
+			databaseLabelName,
+			collectionIDLabelName,
+		})
 
 	// DataCoordNumStoredRows all metrics will be cleaned up after removing matched collectionID and
 	// segment state labels in CleanupDataCoordNumStoredRows method.
@@ -209,6 +213,28 @@ var (
 			stageLabelName,
 		})
 
+	ImportJobLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.DataCoordRole,
+			Name:      "import_job_latency",
+			Help:      "latency of import job",
+			Buckets:   longTaskBuckets,
+		}, []string{
+			importStageLabelName,
+		})
+
+	ImportTaskLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.DataCoordRole,
+			Name:      "import_task_latency",
+			Help:      "latency of import task",
+			Buckets:   longTaskBuckets,
+		}, []string{
+			importStageLabelName,
+		})
+
 	FlushedSegmentFileNum = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: milvusNamespace,
@@ -321,6 +347,15 @@ var (
 			taskTypeLabel,
 			statusLabelName,
 		})
+
+	// TaskNum records the number of tasks of each type.
+	TaskNum = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.DataCoordRole,
+			Name:      "task_count",
+			Help:      "number of index tasks of each type",
+		}, []string{collectionIDLabelName, taskTypeLabel, taskStateLabel})
 )
 
 // RegisterDataCoord registers DataCoord metrics
@@ -339,8 +374,10 @@ func RegisterDataCoord(registry *prometheus.Registry) {
 	registry.MustRegister(DataCoordCompactedSegmentSize)
 	registry.MustRegister(DataCoordCompactionTaskNum)
 	registry.MustRegister(DataCoordCompactionLatency)
+	registry.MustRegister(ImportJobLatency)
+	registry.MustRegister(ImportTaskLatency)
 	registry.MustRegister(DataCoordSizeStoredL0Segment)
-	registry.MustRegister(DataCoordRateStoredL0Segment)
+	registry.MustRegister(DataCoordL0DeleteEntriesNum)
 	registry.MustRegister(FlushedSegmentFileNum)
 	registry.MustRegister(IndexRequestCounter)
 	registry.MustRegister(IndexTaskNum)
@@ -349,6 +386,9 @@ func RegisterDataCoord(registry *prometheus.Registry) {
 	registry.MustRegister(GarbageCollectorFileScanDuration)
 	registry.MustRegister(GarbageCollectorRunCount)
 	registry.MustRegister(DataCoordTaskExecuteLatency)
+	registry.MustRegister(TaskNum)
+
+	registerStreamingCoord(registry)
 }
 
 func CleanupDataCoordSegmentMetrics(dbName string, collectionID int64, segmentID int64) {
@@ -390,6 +430,9 @@ func CleanupDataCoordWithCollectionID(collectionID int64) {
 		collectionIDLabelName: fmt.Sprint(collectionID),
 	})
 	DataCoordSizeStoredL0Segment.Delete(prometheus.Labels{
+		collectionIDLabelName: fmt.Sprint(collectionID),
+	})
+	DataCoordL0DeleteEntriesNum.DeletePartialMatch(prometheus.Labels{
 		collectionIDLabelName: fmt.Sprint(collectionID),
 	})
 }

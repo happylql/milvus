@@ -207,8 +207,17 @@ func TestCatalog_ListCollections(t *testing.T) {
 				return strings.HasPrefix(prefix, FieldMetaPrefix)
 			}), ts).
 			Return([]string{"key"}, []string{string(fm)}, nil)
-		kc := Catalog{Snapshot: kv}
 
+		functionMeta := &schemapb.FunctionSchema{}
+		fcm, err := proto.Marshal(functionMeta)
+		assert.NoError(t, err)
+		kv.On("LoadWithPrefix", mock.MatchedBy(
+			func(prefix string) bool {
+				return strings.HasPrefix(prefix, FunctionMetaPrefix)
+			}), ts).
+			Return([]string{"key"}, []string{string(fcm)}, nil)
+
+		kc := Catalog{Snapshot: kv}
 		ret, err := kc.ListCollections(ctx, testDb, ts)
 		assert.NoError(t, err)
 		assert.NotNil(t, ret)
@@ -248,6 +257,16 @@ func TestCatalog_ListCollections(t *testing.T) {
 				return strings.HasPrefix(prefix, FieldMetaPrefix)
 			}), ts).
 			Return([]string{"key"}, []string{string(fm)}, nil)
+
+		functionMeta := &schemapb.FunctionSchema{}
+		fcm, err := proto.Marshal(functionMeta)
+		assert.NoError(t, err)
+		kv.On("LoadWithPrefix", mock.MatchedBy(
+			func(prefix string) bool {
+				return strings.HasPrefix(prefix, FunctionMetaPrefix)
+			}), ts).
+			Return([]string{"key"}, []string{string(fcm)}, nil)
+
 		kv.On("MultiSaveAndRemove", mock.Anything, mock.Anything, ts).Return(nil)
 		kc := Catalog{Snapshot: kv}
 
@@ -1215,6 +1234,44 @@ func TestCatalog_CreateCollection(t *testing.T) {
 		err := kc.CreateCollection(ctx, coll, 100)
 		assert.NoError(t, err)
 	})
+
+	t.Run("create collection with function", func(t *testing.T) {
+		mockSnapshot := newMockSnapshot(t, withMockSave(nil), withMockMultiSave(nil))
+		kc := &Catalog{Snapshot: mockSnapshot}
+		ctx := context.Background()
+		coll := &model.Collection{
+			Partitions: []*model.Partition{
+				{PartitionName: "test"},
+			},
+			Fields: []*model.Field{
+				{
+					Name:     "text",
+					DataType: schemapb.DataType_VarChar,
+					TypeParams: []*commonpb.KeyValuePair{
+						{
+							Key:   "enable_tokenizer",
+							Value: "true",
+						},
+					},
+				},
+				{
+					Name:     "sparse",
+					DataType: schemapb.DataType_SparseFloatVector,
+				},
+			},
+			Functions: []*model.Function{
+				{
+					Name:             "test",
+					Type:             schemapb.FunctionType_BM25,
+					InputFieldNames:  []string{"text"},
+					OutputFieldNames: []string{"sparse"},
+				},
+			},
+			State: pb.CollectionState_CollectionCreating,
+		}
+		err := kc.CreateCollection(ctx, coll, 100)
+		assert.NoError(t, err)
+	})
 }
 
 func TestCatalog_DropCollection(t *testing.T) {
@@ -1275,6 +1332,44 @@ func TestCatalog_DropCollection(t *testing.T) {
 		coll := &model.Collection{
 			Partitions: []*model.Partition{
 				{PartitionName: "test"},
+			},
+			State: pb.CollectionState_CollectionDropping,
+		}
+		err := kc.DropCollection(ctx, coll, 100)
+		assert.NoError(t, err)
+	})
+
+	t.Run("drop collection with function", func(t *testing.T) {
+		mockSnapshot := newMockSnapshot(t, withMockMultiSaveAndRemove(nil))
+		kc := &Catalog{Snapshot: mockSnapshot}
+		ctx := context.Background()
+		coll := &model.Collection{
+			Partitions: []*model.Partition{
+				{PartitionName: "test"},
+			},
+			Fields: []*model.Field{
+				{
+					Name:     "text",
+					DataType: schemapb.DataType_VarChar,
+					TypeParams: []*commonpb.KeyValuePair{
+						{
+							Key:   "enable_tokenizer",
+							Value: "true",
+						},
+					},
+				},
+				{
+					Name:     "sparse",
+					DataType: schemapb.DataType_SparseFloatVector,
+				},
+			},
+			Functions: []*model.Function{
+				{
+					Name:             "test",
+					Type:             schemapb.FunctionType_BM25,
+					InputFieldNames:  []string{"text"},
+					OutputFieldNames: []string{"sparse"},
+				},
 			},
 			State: pb.CollectionState_CollectionDropping,
 		}
@@ -2322,12 +2417,18 @@ func TestRBAC_Grant(t *testing.T) {
 			kvmock = mocks.NewTxnKV(t)
 			c      = &Catalog{Txn: kvmock}
 
-			errorRole       = "error-role"
-			errorRolePrefix = funcutil.HandleTenantForEtcdKey(GranteePrefix, tenant, errorRole+"/")
+			errorRole           = "error-role"
+			errorRolePrefix     = funcutil.HandleTenantForEtcdKey(GranteePrefix, tenant, errorRole+"/")
+			loadErrorRole       = "load-error-role"
+			loadErrorRolePrefix = funcutil.HandleTenantForEtcdKey(GranteePrefix, tenant, loadErrorRole+"/")
+			granteeID           = "123456"
+			granteePrefix       = funcutil.HandleTenantForEtcdKey(GranteeIDPrefix, tenant, granteeID+"/")
 		)
 
-		kvmock.EXPECT().RemoveWithPrefix(errorRolePrefix).Call.Return(errors.New("mock removeWithPrefix error"))
-		kvmock.EXPECT().RemoveWithPrefix(mock.Anything).Call.Return(nil)
+		kvmock.EXPECT().LoadWithPrefix(loadErrorRolePrefix).Call.Return(nil, nil, errors.New("mock loadWithPrefix error"))
+		kvmock.EXPECT().LoadWithPrefix(mock.Anything).Call.Return(nil, []string{granteeID}, nil)
+		kvmock.EXPECT().MultiSaveAndRemoveWithPrefix(mock.Anything, []string{errorRolePrefix, granteePrefix}, mock.Anything).Call.Return(errors.New("mock removeWithPrefix error"))
+		kvmock.EXPECT().MultiSaveAndRemoveWithPrefix(mock.Anything, mock.Anything, mock.Anything).Call.Return(nil)
 
 		tests := []struct {
 			isValid bool
@@ -2337,6 +2438,7 @@ func TestRBAC_Grant(t *testing.T) {
 		}{
 			{true, "role1", "valid role1"},
 			{false, errorRole, "invalid errorRole"},
+			{false, loadErrorRole, "invalid load errorRole"},
 		}
 
 		for _, test := range tests {
@@ -2771,4 +2873,16 @@ func TestCatalog_AlterDatabase(t *testing.T) {
 	kvmock.EXPECT().Save(mock.Anything, mock.Anything, mock.Anything).Return(mockErr)
 	err = c.AlterDatabase(ctx, newDB, typeutil.ZeroTimestamp)
 	assert.ErrorIs(t, err, mockErr)
+}
+
+func TestCatalog_listFunctionError(t *testing.T) {
+	mockSnapshot := newMockSnapshot(t)
+	kc := &Catalog{Snapshot: mockSnapshot}
+	mockSnapshot.EXPECT().LoadWithPrefix(mock.Anything, mock.Anything).Return(nil, nil, fmt.Errorf("mock error"))
+	_, err := kc.listFunctions(1, 1)
+	assert.Error(t, err)
+
+	mockSnapshot.EXPECT().LoadWithPrefix(mock.Anything, mock.Anything).Return([]string{"test-key"}, []string{"invalid bytes"}, nil)
+	_, err = kc.listFunctions(1, 1)
+	assert.Error(t, err)
 }

@@ -129,7 +129,6 @@ type Server struct {
 	metricsCacheManager   *metricsinfo.MetricsCacheManager
 
 	flushCh         chan UniqueID
-	buildIndexCh    chan UniqueID
 	notifyIndexChan chan UniqueID
 	factory         dependency.Factory
 
@@ -153,6 +152,7 @@ type Server struct {
 	indexEngineVersionManager IndexEngineVersionManager
 
 	taskScheduler *taskScheduler
+	jobManager    StatsJobManager
 
 	// manage ways that data coord access other coord
 	broker broker.Broker
@@ -205,7 +205,6 @@ func CreateServer(ctx context.Context, factory dependency.Factory, opts ...Optio
 		quitCh:                 make(chan struct{}),
 		factory:                factory,
 		flushCh:                make(chan UniqueID, 1024),
-		buildIndexCh:           make(chan UniqueID, 1024),
 		notifyIndexChan:        make(chan UniqueID),
 		dataNodeCreator:        defaultDataNodeCreatorFunc,
 		indexNodeCreator:       defaultIndexNodeCreatorFunc,
@@ -379,6 +378,9 @@ func (s *Server) initDataCoord() error {
 	s.initTaskScheduler(storageCli)
 	log.Info("init task scheduler done")
 
+	s.initJobManager()
+	log.Info("init statsJobManager done")
+
 	s.initCompaction()
 	log.Info("init compaction done")
 
@@ -393,8 +395,8 @@ func (s *Server) initDataCoord() error {
 	if err != nil {
 		return err
 	}
-	s.importScheduler = NewImportScheduler(s.meta, s.cluster, s.allocator, s.importMeta, s.buildIndexCh)
-	s.importChecker = NewImportChecker(s.meta, s.broker, s.cluster, s.allocator, s.segmentManager, s.importMeta)
+	s.importScheduler = NewImportScheduler(s.meta, s.cluster, s.allocator, s.importMeta)
+	s.importChecker = NewImportChecker(s.meta, s.broker, s.cluster, s.allocator, s.importMeta, s.jobManager)
 
 	s.syncSegmentsScheduler = newSyncSegmentsScheduler(s.meta, s.channelManager, s.sessionManager)
 
@@ -425,7 +427,7 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) startDataCoord() {
-	s.taskScheduler.Start()
+	s.startTaskScheduler()
 	s.startServerLoop()
 
 	// http.Register(&http.Handler{
@@ -669,7 +671,13 @@ func (s *Server) initMeta(chunkManager storage.ChunkManager) error {
 
 func (s *Server) initTaskScheduler(manager storage.ChunkManager) {
 	if s.taskScheduler == nil {
-		s.taskScheduler = newTaskScheduler(s.ctx, s.meta, s.indexNodeManager, manager, s.indexEngineVersionManager, s.handler)
+		s.taskScheduler = newTaskScheduler(s.ctx, s.meta, s.indexNodeManager, manager, s.indexEngineVersionManager, s.handler, s.allocator)
+	}
+}
+
+func (s *Server) initJobManager() {
+	if s.jobManager == nil {
+		s.jobManager = newJobManager(s.ctx, s.meta, s.taskScheduler, s.allocator)
 	}
 }
 
@@ -720,14 +728,20 @@ func (s *Server) startServerLoop() {
 	s.serverLoopWg.Add(2)
 	s.startWatchService(s.serverLoopCtx)
 	s.startFlushLoop(s.serverLoopCtx)
-	s.startIndexService(s.serverLoopCtx)
 	go s.importScheduler.Start()
 	go s.importChecker.Start()
 	s.garbageCollector.start()
 
-	if !streamingutil.IsStreamingServiceEnabled() {
+	if !(streamingutil.IsStreamingServiceEnabled() || paramtable.Get().DataNodeCfg.SkipBFStatsLoad.GetAsBool()) {
 		s.syncSegmentsScheduler.Start()
 	}
+}
+
+func (s *Server) startTaskScheduler() {
+	s.taskScheduler.Start()
+	s.jobManager.Start()
+
+	s.startIndexService(s.serverLoopCtx)
 }
 
 func (s *Server) updateSegmentStatistics(stats []*commonpb.SegmentStats) {
@@ -981,7 +995,7 @@ func (s *Server) postFlush(ctx context.Context, segmentID UniqueID) error {
 		return err
 	}
 	select {
-	case s.buildIndexCh <- segmentID:
+	case getStatsTaskChSingleton() <- segmentID:
 	default:
 	}
 
@@ -1056,6 +1070,9 @@ func (s *Server) Stop() error {
 
 	s.stopCompaction()
 	logutil.Logger(s.ctx).Info("datacoord compaction stopped")
+
+	s.jobManager.Stop()
+	logutil.Logger(s.ctx).Info("datacoord statsJobManager stopped")
 
 	s.taskScheduler.Stop()
 	logutil.Logger(s.ctx).Info("datacoord index builder stopped")
