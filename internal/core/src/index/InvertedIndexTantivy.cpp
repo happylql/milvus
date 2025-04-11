@@ -23,6 +23,7 @@
 #include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <cstddef>
+#include <type_traits>
 #include <vector>
 #include "InvertedIndexTantivy.h"
 
@@ -203,24 +204,26 @@ InvertedIndexTantivy<T>::Load(milvus::tracer::TraceContext ctx,
     auto inverted_index_files = index_files.value();
 
     // need erase the index type file that has been readed
-    auto index_type_file =
-        disk_file_manager_->GetRemoteIndexPrefix() + std::string("/index_type");
-    inverted_index_files.erase(
-        std::remove_if(
-            inverted_index_files.begin(),
-            inverted_index_files.end(),
-            [&](const std::string& file) { return file == index_type_file; }),
-        inverted_index_files.end());
+    auto GetFileName = [](const std::string& path) -> std::string {
+        auto pos = path.find_last_of('/');
+        return pos == std::string::npos ? path : path.substr(pos + 1);
+    };
+    inverted_index_files.erase(std::remove_if(inverted_index_files.begin(),
+                                              inverted_index_files.end(),
+                                              [&](const std::string& file) {
+                                                  return GetFileName(file) ==
+                                                         "index_type";
+                                              }),
+                               inverted_index_files.end());
 
     std::vector<std::string> null_offset_files;
     std::shared_ptr<FieldDataBase> null_offset_data;
 
-    auto find_file = [&](const std::string& file) -> auto {
+    auto find_file = [&](const std::string& target) -> auto{
         return std::find_if(inverted_index_files.begin(),
                             inverted_index_files.end(),
-                            [&](const std::string& f) {
-                                return f.substr(f.find_last_of('/') + 1) ==
-                                       file;
+                            [&](const std::string& filename) {
+                                return GetFileName(filename) == target;
                             });
     };
 
@@ -461,27 +464,29 @@ InvertedIndexTantivy<T>::BuildWithRawDataForUT(size_t n,
     if constexpr (std::is_same_v<std::string, T>) {
         schema_.set_data_type(proto::schema::DataType::VarChar);
     }
-    boost::uuids::random_generator generator;
-    auto uuid = generator();
-    auto prefix = boost::uuids::to_string(uuid);
-    path_ = fmt::format("/tmp/{}", prefix);
-    boost::filesystem::create_directories(path_);
-    d_type_ = get_tantivy_data_type(schema_);
-    std::string field = "test_inverted_index";
-    inverted_index_single_segment_ =
-        GetValueFromConfig<int32_t>(config,
-                                    milvus::index::SCALAR_INDEX_ENGINE_VERSION)
-            .value_or(1) == 0;
-    tantivy_index_version_ =
-        GetValueFromConfig<int32_t>(config,
-                                    milvus::index::TANTIVY_INDEX_VERSION)
-            .value_or(milvus::index::TANTIVY_INDEX_LATEST_VERSION);
-    wrapper_ =
-        std::make_shared<TantivyIndexWrapper>(field.c_str(),
-                                              d_type_,
-                                              path_.c_str(),
-                                              tantivy_index_version_,
-                                              inverted_index_single_segment_);
+    if (!wrapper_) {
+        boost::uuids::random_generator generator;
+        auto uuid = generator();
+        auto prefix = boost::uuids::to_string(uuid);
+        path_ = fmt::format("/tmp/{}", prefix);
+        boost::filesystem::create_directories(path_);
+        d_type_ = get_tantivy_data_type(schema_);
+        std::string field = "test_inverted_index";
+        inverted_index_single_segment_ =
+            GetValueFromConfig<int32_t>(
+                config, milvus::index::SCALAR_INDEX_ENGINE_VERSION)
+                .value_or(1) == 0;
+        tantivy_index_version_ =
+            GetValueFromConfig<int32_t>(config,
+                                        milvus::index::TANTIVY_INDEX_VERSION)
+                .value_or(milvus::index::TANTIVY_INDEX_LATEST_VERSION);
+        wrapper_ = std::make_shared<TantivyIndexWrapper>(
+            field.c_str(),
+            d_type_,
+            path_.c_str(),
+            tantivy_index_version_,
+            inverted_index_single_segment_);
+    }
     if (!inverted_index_single_segment_) {
         if (config.find("is_array") != config.end()) {
             // only used in ut.
@@ -603,6 +608,10 @@ template <typename T>
 void
 InvertedIndexTantivy<T>::build_index_for_array(
     const std::vector<std::shared_ptr<FieldDataBase>>& field_datas) {
+    using ElementType = std::conditional_t<std::is_same<T, int8_t>::value ||
+                                               std::is_same<T, int16_t>::value,
+                                           int32_t,
+                                           T>;
     int64_t offset = 0;
     for (const auto& data : field_datas) {
         auto n = data->get_num_rows();
@@ -615,12 +624,16 @@ InvertedIndexTantivy<T>::build_index_for_array(
             auto length = data->is_valid(i) ? array_column[i].length() : 0;
             if (!inverted_index_single_segment_) {
                 wrapper_->template add_array_data(
-                    reinterpret_cast<const T*>(array_column[i].data()),
+                    reinterpret_cast<const ElementType*>(
+                        array_column[i].data()),
                     length,
                     offset++);
             } else {
                 wrapper_->template add_array_data_by_single_segment_writer(
-                    reinterpret_cast<const T*>(array_column[i].data()), length);
+                    reinterpret_cast<const ElementType*>(
+                        array_column[i].data()),
+                    length);
+                offset++;
             }
         }
     }
