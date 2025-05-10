@@ -62,8 +62,8 @@ func adaptImplsToWAL(
 	wal := &walAdaptorImpl{
 		roWALAdaptorImpl: roWAL,
 		rwWALImpls:       basicWAL,
-		// TODO: make the pool size configurable.
-		appendExecutionPool:    conc.NewPool[struct{}](10),
+		// TODO: remove the pool, use a queue instead.
+		appendExecutionPool:    conc.NewPool[struct{}](0),
 		param:                  param,
 		interceptorBuildResult: buildInterceptor(builders, param),
 		writeMetrics:           metricsutil.NewWriteMetrics(basicWAL.Channel(), basicWAL.WALName()),
@@ -129,7 +129,6 @@ func (w *walAdaptorImpl) Append(ctx context.Context, msg message.MutableMessage)
 		func(ctx context.Context, msg message.MutableMessage) (message.MessageID, error) {
 			if notPersistHint := utility.GetNotPersisted(ctx); notPersistHint != nil {
 				// do not persist the message if the hint is set.
-				appendMetrics.NotPersisted()
 				return notPersistHint.MessageID, nil
 			}
 			metricsGuard.StartWALImplAppend()

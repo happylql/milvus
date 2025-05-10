@@ -64,7 +64,7 @@ class TestMilvusClientHybridSearchInvalid(TestMilvusClientV2Base):
         ranker = WeightedRanker(0.2, 0.8)
         error = {ct.err_code: 100,
                  ct.err_msg: f"collection not found[database=default][collection={name}]"}
-        self.hybrid_search(client, name, [sub_search1], ranker, limit=default_limit,
+        self.hybrid_search(client, name, [sub_search1, sub_search1], ranker, limit=default_limit,
                     check_task=CheckTasks.err_res, check_items=error)
         self.drop_collection(client, collection_name)
 
@@ -88,7 +88,7 @@ class TestMilvusClientHybridSearchInvalid(TestMilvusClientV2Base):
         ranker = WeightedRanker(0.2, 0.8)
         error = {ct.err_code: 100,
                  ct.err_msg: f"collection not found[database=default][collection={name}]"}
-        self.hybrid_search(client, name, [sub_search1], ranker, limit=default_limit,
+        self.hybrid_search(client, name, [sub_search1, sub_search1], ranker, limit=default_limit,
                     check_task=CheckTasks.err_res, check_items=error)
         self.drop_collection(client, collection_name)
 
@@ -133,7 +133,7 @@ class TestMilvusClientHybridSearchInvalid(TestMilvusClientV2Base):
         ranker = WeightedRanker(0.2, 0.8)
         error = {ct.err_code: 100,
                  ct.err_msg: f"collection not found[database=default][collection=1]"}
-        self.hybrid_search(client, collection_name, [sub_search1], invalid_ranker, limit=default_limit,
+        self.hybrid_search(client, collection_name, [sub_search1, sub_search1], invalid_ranker, limit=default_limit,
                     check_task=CheckTasks.err_res, check_items=error)
         self.drop_collection(client, collection_name)
 
@@ -156,7 +156,7 @@ class TestMilvusClientHybridSearchInvalid(TestMilvusClientV2Base):
         ranker = WeightedRanker(0.2, 0.8)
         error = {ct.err_code: 1,
                  ct.err_msg: f"`limit` value {invalid_limit} is illegal"}
-        self.hybrid_search(client, collection_name, [sub_search1], ranker, limit=invalid_limit,
+        self.hybrid_search(client, collection_name, [sub_search1, sub_search1], ranker, limit=invalid_limit,
                     check_task=CheckTasks.err_res, check_items=error)
         self.drop_collection(client, collection_name)
 
@@ -179,7 +179,7 @@ class TestMilvusClientHybridSearchInvalid(TestMilvusClientV2Base):
         ranker = WeightedRanker(0.2, 0.8)
         error = {ct.err_code: 65535,
                  ct.err_msg: "invalid max query result window, (offset+limit) should be in range [1, 16384], but got 16385"}
-        self.hybrid_search(client, collection_name, [sub_search1], ranker, limit=invalid_limit,
+        self.hybrid_search(client, collection_name, [sub_search1, sub_search1], ranker, limit=invalid_limit,
                     check_task=CheckTasks.err_res, check_items=error)
         self.drop_collection(client, collection_name)
 
@@ -202,7 +202,7 @@ class TestMilvusClientHybridSearchInvalid(TestMilvusClientV2Base):
         ranker = WeightedRanker(0.2, 0.8)
         error = {ct.err_code: 1,
                  ct.err_msg: f"`output_fields` value {invalid_output_fields} is illegal"}
-        self.hybrid_search(client, collection_name, [sub_search1], ranker, limit=default_limit,
+        self.hybrid_search(client, collection_name, [sub_search1, sub_search1], ranker, limit=default_limit,
                            output_fields=invalid_output_fields, check_task=CheckTasks.err_res, check_items=error)
         self.drop_collection(client, collection_name)
 
@@ -226,7 +226,7 @@ class TestMilvusClientHybridSearchInvalid(TestMilvusClientV2Base):
         ranker = WeightedRanker(0.2, 0.8)
         error = {ct.err_code: 1,
                  ct.err_msg: f"`partition_name_array` value {invalid_partition_names} is illegal"}
-        self.hybrid_search(client, collection_name, [sub_search1], ranker, limit=default_limit,
+        self.hybrid_search(client, collection_name, [sub_search1, sub_search1], ranker, limit=default_limit,
                            partition_names=invalid_partition_names, check_task=CheckTasks.err_res, check_items=error)
         self.drop_collection(client, collection_name)
 
@@ -249,7 +249,7 @@ class TestMilvusClientHybridSearchInvalid(TestMilvusClientV2Base):
         ranker = WeightedRanker(0.2, 0.8)
         error = {ct.err_code: 65535,
                 ct.err_msg: f"partition name {invalid_partition_names} not found"}
-        self.hybrid_search(client, collection_name, [sub_search1], ranker, limit=default_limit,
+        self.hybrid_search(client, collection_name, [sub_search1, sub_search1], ranker, limit=default_limit,
                            partition_names=[invalid_partition_names], check_task=CheckTasks.err_res,
                            check_items=error)
         self.drop_collection(client, collection_name)
@@ -274,7 +274,7 @@ class TestMilvusClientHybridSearchInvalid(TestMilvusClientV2Base):
         error = {ct.err_code: 1100,
                  ct.err_msg: f"failed to create query plan: failed to get field schema by name: "
                              f"fieldName({not_exist_vector_field}) not found: invalid parameter"}
-        self.hybrid_search(client, collection_name, [sub_search1], ranker, limit=default_limit,
+        self.hybrid_search(client, collection_name, [sub_search1, sub_search1], ranker, limit=default_limit,
                            check_task=CheckTasks.err_res, check_items=error)
         self.drop_collection(client, collection_name)
 
@@ -365,7 +365,8 @@ class TestMilvusClientHybridSearchValid(TestMilvusClientV2Base):
                            check_items={"enable_milvus_client_api": True,
                                         "nq": len(vectors_to_search),
                                         "ids": insert_ids,
-                                        "limit": default_limit})
+                                        "limit": default_limit,
+                                        "pk_name": default_primary_key_field_name})
         self.drop_collection(client, collection_name)
 
     @pytest.mark.tags(CaseLabel.L1)
@@ -396,6 +397,7 @@ class TestMilvusClientHybridSearchValid(TestMilvusClientV2Base):
                            check_items={"enable_milvus_client_api": True,
                                         "nq": len(vectors_to_search),
                                         "ids": insert_ids,
+                                        "pk_name": default_primary_key_field_name,
                                         "limit": default_limit})
         self.drop_collection(client, collection_name)
 
@@ -472,6 +474,7 @@ class TestMilvusClientHybridSearchValid(TestMilvusClientV2Base):
                            check_items={"enable_milvus_client_api": True,
                                         "nq": len(vectors_to_search),
                                         "ids": insert_ids,
+                                        "pk_name": default_primary_key_field_name,
                                         "limit": default_limit})
         sub_search1 = AnnSearchRequest(vectors_to_search, default_vector_field_name, {"level": 1}, 20,
                                        expr=f"{json_field_name}['a']['b']>=10")
@@ -484,5 +487,6 @@ class TestMilvusClientHybridSearchValid(TestMilvusClientV2Base):
                            check_items={"enable_milvus_client_api": True,
                                         "nq": len(vectors_to_search),
                                         "ids": insert_ids,
+                                        "pk_name": default_primary_key_field_name,
                                         "limit": default_limit})
         self.drop_collection(client, collection_name)

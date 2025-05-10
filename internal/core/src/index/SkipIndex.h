@@ -10,13 +10,11 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #pragma once
-#include <cstddef>
+
 #include <unordered_map>
 
 #include "common/Types.h"
-#include "log/Log.h"
-#include "mmap/Column.h"
-#include "mmap/ChunkedColumn.h"
+#include "mmap/ChunkedColumnInterface.h"
 
 namespace milvus {
 
@@ -101,11 +99,10 @@ class SkipIndex {
                   const bool* valid_data,
                   int64_t count);
 
-    template <typename T>
     void
     LoadString(milvus::FieldId field_id,
                int64_t chunk_id,
-               const T& var_column) {
+               const ChunkedColumnInterface& var_column) {
         int num_rows = var_column.NumRows();
         auto chunkMetrics = std::make_unique<FieldChunkMetrics>();
         if (num_rows > 0) {
@@ -292,39 +289,34 @@ class SkipIndex {
         return {minValue, maxValue, null_count};
     }
 
-    template <typename T>
     metricInfo<std::string>
-    ProcessStringFieldMetrics(const T& var_column) {
-        int num_rows = var_column.NumRows();
-        // find first not null value
-        int64_t start = 0;
-        for (int64_t i = start; i < num_rows; i++) {
-            if (!var_column.IsValid(i)) {
-                start++;
-                continue;
-            }
-            break;
-        }
-        if (start > num_rows - 1) {
-            return {std::string(), std::string(), num_rows};
-        }
-        std::string_view min_string = var_column.RawAt(start);
-        std::string_view max_string = var_column.RawAt(start);
-        int64_t null_count = start;
-        for (int64_t i = start; i < num_rows; i++) {
-            const auto& val = var_column.RawAt(i);
-            if (!var_column.IsValid(i)) {
-                null_count++;
-                continue;
-            }
-            if (val < min_string) {
-                min_string = val;
-            }
-            if (val > max_string) {
-                max_string = val;
-            }
-        }
-        // The field data may be released, so we need to copy the string to avoid invalid memory access.
+    ProcessStringFieldMetrics(const ChunkedColumnInterface& var_column) {
+        // all captured by reference
+        bool has_first_valid = false;
+        std::string_view min_string;
+        std::string_view max_string;
+        int64_t null_count = 0;
+
+        var_column.BulkRawStringAt(
+            [&](std::string_view value, size_t offset, bool is_valid) {
+                if (!is_valid) {
+                    null_count++;
+                    return;
+                }
+                if (!has_first_valid) {
+                    min_string = value;
+                    max_string = value;
+                    has_first_valid = true;
+                } else {
+                    if (value < min_string) {
+                        min_string = value;
+                    }
+                    if (value > max_string) {
+                        max_string = value;
+                    }
+                }
+            });
+        // The field data may later be released, so we need to copy the string to avoid invalid memory access.
         return {std::string(min_string), std::string(max_string), null_count};
     }
 

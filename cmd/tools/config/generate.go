@@ -233,11 +233,11 @@ func WriteYaml(w io.Writer) {
 		{
 			name: "mq",
 			header: `
-# Milvus supports four MQ: rocksmq(based on RockDB), natsmq(embedded nats-server), Pulsar and Kafka.
+# Milvus supports four MQ: rocksmq(based on RockDB), Pulsar and Kafka.
 # You can change your mq by setting mq.type field.
 # If you don't set mq.type field as default, there is a note about enabling priority if we config multiple mq in this file.
-# 1. standalone(local) mode: rocksmq(default) > natsmq > Pulsar > Kafka
-# 2. cluster mode:  Pulsar(default) > Kafka (rocksmq and natsmq is unsupported in cluster mode)`,
+# 1. standalone(local) mode: rocksmq(default) > Pulsar > Kafka
+# 2. cluster mode:  Pulsar(default) > Kafka (rocksmq is unsupported in cluster mode)`,
 		},
 		{
 			name: "woodpecker",
@@ -256,12 +256,6 @@ func WriteYaml(w io.Writer) {
 		},
 		{
 			name: "rocksmq",
-		},
-		{
-			name: "natsmq",
-			header: `
-# natsmq configuration.
-# more detail: https://docs.nats.io/running-a-nats-service/configuration`,
 		},
 		{
 			name:   "mixCoord",
@@ -359,6 +353,20 @@ func WriteYaml(w io.Writer) {
 			name: "knowhere",
 			header: `
 # Any configuration related to the knowhere vector search engine`,
+		},
+		{
+			name: "credential",
+			header: `
+# credential configs, support apikey, AKSK, gcp credential
+# examples:
+# credential:
+#  your_apikey_crendential_name:
+#    apikey:  # Your apikey credential
+#  your_aksk_crendential_name:
+#    access_key_id:
+#    secret_access_key:
+#  your_gcp_credential_name:
+#    credential_json:`,
 		},
 		{
 			name: "function",

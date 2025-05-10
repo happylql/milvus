@@ -517,9 +517,110 @@ func ValidateField(field *schemapb.FieldSchema, schema *schemapb.CollectionSchem
 		return err
 	}
 
-	if err := ctokenizer.ValidateTextSchema(field, wasBm25FunctionInputField(schema, field)); err != nil {
+	if err := validateAnalyzer(schema, field); err != nil {
 		return err
 	}
+	return nil
+}
+
+func validateMultiAnalyzerParams(params string, coll *schemapb.CollectionSchema) error {
+	var m map[string]json.RawMessage
+	var analyzerMap map[string]json.RawMessage
+	var mFileName string
+
+	err := json.Unmarshal([]byte(params), &m)
+	if err != nil {
+		return err
+	}
+
+	mfield, ok := m["by_field"]
+	if !ok {
+		return fmt.Errorf("multi analyzer params now must set by_field to specify with field decide analyzer")
+	}
+
+	err = json.Unmarshal(mfield, &mFileName)
+	if err != nil {
+		return fmt.Errorf("multi analyzer params by_field must be string but now: %s", mfield)
+	}
+
+	// check field exist
+	fieldExist := false
+	for _, field := range coll.GetFields() {
+		if field.GetName() == mFileName {
+			// only support string field now
+			if field.GetDataType() != schemapb.DataType_VarChar {
+				return fmt.Errorf("multi analyzer params now only support by string field, but field %s is not string", field.GetName())
+			}
+			fieldExist = true
+			break
+		}
+	}
+
+	if !fieldExist {
+		return fmt.Errorf("multi analyzer dependent field %s not exist in collection %s", string(mfield), coll.GetName())
+	}
+
+	if value, ok := m["alias"]; ok {
+		mapping := map[string]string{}
+		err = json.Unmarshal(value, &mapping)
+		if err != nil {
+			return fmt.Errorf("multi analyzer alias must be string map but now: %s", value)
+		}
+	}
+
+	analyzers, ok := m["analyzers"]
+	if !ok {
+		return fmt.Errorf("multi analyzer params must set analyzers ")
+	}
+
+	err = json.Unmarshal(analyzers, &analyzerMap)
+	if err != nil {
+		return fmt.Errorf("unmarshal analyzers failed: %s", err)
+	}
+
+	hasDefault := false
+	for name, params := range analyzerMap {
+		if err := ctokenizer.ValidateTokenizer(string(params)); err != nil {
+			return fmt.Errorf("analyzer %s params invalid: %s", name, err)
+		}
+		if name == "default" {
+			hasDefault = true
+		}
+	}
+
+	if !hasDefault {
+		return fmt.Errorf("multi analyzer must set default analyzer for all unknown value")
+	}
+	return nil
+}
+
+func validateAnalyzer(collSchema *schemapb.CollectionSchema, fieldSchema *schemapb.FieldSchema) error {
+	h := typeutil.CreateFieldSchemaHelper(fieldSchema)
+	if !h.EnableMatch() && !wasBm25FunctionInputField(collSchema, fieldSchema) {
+		return nil
+	}
+
+	if !h.EnableAnalyzer() {
+		return fmt.Errorf("field %s is set to enable match or bm25 function but not enable analyzer", fieldSchema.Name)
+	}
+
+	if params, ok := h.GetMultiAnalyzerParams(); ok {
+		if h.EnableMatch() {
+			return fmt.Errorf("multi analyzer now only support for bm25, but now field %s enable match", fieldSchema.Name)
+		}
+		if h.HasAnalyzerParams() {
+			return fmt.Errorf("field %s analyzer params should be none if has multi analyzer params", fieldSchema.Name)
+		}
+
+		return validateMultiAnalyzerParams(params, collSchema)
+	}
+
+	for _, kv := range fieldSchema.GetTypeParams() {
+		if kv.GetKey() == "analyzer_params" {
+			return ctokenizer.ValidateTokenizer(kv.Value)
+		}
+	}
+	// return nil when use default analyzer
 	return nil
 }
 
@@ -782,15 +883,6 @@ func checkFunctionOutputField(fSchema *schemapb.FunctionSchema, fields []*schema
 		return errors.New("check output field for unknown function type")
 	}
 	return nil
-}
-
-func wasBm25FunctionInputField(coll *schemapb.CollectionSchema, field *schemapb.FieldSchema) bool {
-	for _, fun := range coll.GetFunctions() {
-		if fun.GetType() == schemapb.FunctionType_BM25 && field.GetName() == fun.GetInputFieldNames()[0] {
-			return true
-		}
-	}
-	return false
 }
 
 func checkFunctionInputField(function *schemapb.FunctionSchema, fields []*schemapb.FieldSchema) error {
@@ -1430,24 +1522,36 @@ func translateOutputFields(outputFields []string, schema *schemaInfo, removePkFi
 			} else {
 				if schema.EnableDynamicField {
 					if schema.IsFieldLoaded(dynamicField.GetFieldID()) {
-						schemaH, err := typeutil.CreateSchemaHelper(schema.CollectionSchema)
-						if err != nil {
-							return nil, nil, nil, false, err
-						}
-						err = planparserv2.ParseIdentifier(schemaH, outputFieldName, func(expr *planpb.Expr) error {
-							if len(expr.GetColumnExpr().GetInfo().GetNestedPath()) == 1 &&
-								expr.GetColumnExpr().GetInfo().GetNestedPath()[0] == outputFieldName {
-								return nil
+						dynamicNestedPath := outputFieldName
+						err := planparserv2.ParseIdentifier(schema.schemaHelper, outputFieldName, func(expr *planpb.Expr) error {
+							columnInfo := expr.GetColumnExpr().GetInfo()
+							// there must be no error here
+							dynamicField, _ := schema.schemaHelper.GetDynamicField()
+							// only $meta["xxx"] is allowed for now
+							if dynamicField.GetFieldID() != columnInfo.GetFieldId() {
+								return errors.New("not support getting subkeys of json field yet")
 							}
-							return errors.New("not support getting subkeys of json field yet")
+							nestedPaths := columnInfo.GetNestedPath()
+							// $meta["A"]["B"] not allowed for now
+							if len(nestedPaths) != 1 {
+								return errors.New("not support getting multiple level of dynamic field for now")
+							}
+							// $meta["dyn_field"], output field name could be:
+							// 1. "dyn_field", outputFieldName == nestedPath
+							// 2. `$meta["dyn_field"]` explicit form
+							if nestedPaths[0] != outputFieldName {
+								// use "dyn_field" as userDynamicFieldsMap when outputField = `$meta["dyn_field"]`
+								dynamicNestedPath = nestedPaths[0]
+							}
+							return nil
 						})
 						if err != nil {
-							log.Info("parse output field name failed", zap.String("field name", outputFieldName))
+							log.Info("parse output field name failed", zap.String("field name", outputFieldName), zap.Error(err))
 							return nil, nil, nil, false, fmt.Errorf("parse output field name failed: %s", outputFieldName)
 						}
 						resultFieldNameMap[common.MetaFieldName] = true
 						userOutputFieldsMap[outputFieldName] = true
-						userDynamicFieldsMap[outputFieldName] = true
+						userDynamicFieldsMap[dynamicNestedPath] = true
 					} else {
 						// TODO after cold field be able to fetched with chunk cache, this check shall be removed
 						return nil, nil, nil, false, fmt.Errorf("field %s cannot be returned since dynamic field not loaded", outputFieldName)
@@ -2043,6 +2147,21 @@ func SendReplicateMessagePack(ctx context.Context, replicateMsgStream msgstream.
 
 	var tsMsg msgstream.TsMsg
 	switch r := request.(type) {
+	case *milvuspb.AlterCollectionRequest:
+		tsMsg = &msgstream.AlterCollectionMsg{
+			BaseMsg:                getBaseMsg(ctx, ts),
+			AlterCollectionRequest: r,
+		}
+	case *milvuspb.AlterCollectionFieldRequest:
+		tsMsg = &msgstream.AlterCollectionFieldMsg{
+			BaseMsg:                     getBaseMsg(ctx, ts),
+			AlterCollectionFieldRequest: r,
+		}
+	case *milvuspb.RenameCollectionRequest:
+		tsMsg = &msgstream.RenameCollectionMsg{
+			BaseMsg:                 getBaseMsg(ctx, ts),
+			RenameCollectionRequest: r,
+		}
 	case *milvuspb.CreateDatabaseRequest:
 		tsMsg = &msgstream.CreateDatabaseMsg{
 			BaseMsg:               getBaseMsg(ctx, ts),
@@ -2132,6 +2251,26 @@ func SendReplicateMessagePack(ctx context.Context, replicateMsgStream msgstream.
 		tsMsg = &msgstream.OperatePrivilegeMsg{
 			BaseMsg:                 getBaseMsg(ctx, ts),
 			OperatePrivilegeRequest: r,
+		}
+	case *milvuspb.OperatePrivilegeV2Request:
+		tsMsg = &msgstream.OperatePrivilegeV2Msg{
+			BaseMsg:                   getBaseMsg(ctx, ts),
+			OperatePrivilegeV2Request: r,
+		}
+	case *milvuspb.CreateAliasRequest:
+		tsMsg = &msgstream.CreateAliasMsg{
+			BaseMsg:            getBaseMsg(ctx, ts),
+			CreateAliasRequest: r,
+		}
+	case *milvuspb.DropAliasRequest:
+		tsMsg = &msgstream.DropAliasMsg{
+			BaseMsg:          getBaseMsg(ctx, ts),
+			DropAliasRequest: r,
+		}
+	case *milvuspb.AlterAliasRequest:
+		tsMsg = &msgstream.AlterAliasMsg{
+			BaseMsg:           getBaseMsg(ctx, ts),
+			AlterAliasRequest: r,
 		}
 	default:
 		log.Warn("unknown request", zap.Any("request", request))

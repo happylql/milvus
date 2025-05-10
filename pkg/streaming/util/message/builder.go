@@ -114,6 +114,16 @@ func (b *mutableMesasgeBuilder[H, B]) WithHeader(h H) *mutableMesasgeBuilder[H, 
 	return b
 }
 
+// WithNotPersist creates a new builder with not persisted property.
+func (b *mutableMesasgeBuilder[H, B]) WithNotPersisted() *mutableMesasgeBuilder[H, B] {
+	messageType := mustGetMessageTypeFromHeader(b.header)
+	if messageType != MessageTypeTimeTick {
+		panic("only time tick message can be not persisted")
+	}
+	b.WithProperty(messageNotPersisteted, "")
+	return b
+}
+
 // WithBody creates a new builder with message body.
 func (b *mutableMesasgeBuilder[H, B]) WithBody(body B) *mutableMesasgeBuilder[H, B] {
 	b.body = body
@@ -252,7 +262,7 @@ func (b *mutableMesasgeBuilder[H, B]) build() (*messageImpl, error) {
 		}
 
 		cipher := mustGetCipher()
-		encryptor, safeKey, err := cipher.GetEncryptor(b.cipherConfig.EzID)
+		encryptor, safeKey, err := cipher.GetEncryptor(b.cipherConfig.EzID, b.cipherConfig.CollectionID)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to get encryptor")
 		}
@@ -262,6 +272,7 @@ func (b *mutableMesasgeBuilder[H, B]) build() (*messageImpl, error) {
 		}
 		ch, err := EncodeProto(&messagespb.CipherHeader{
 			EzId:         b.cipherConfig.EzID,
+			CollectionId: b.cipherConfig.CollectionID,
 			SafeKey:      safeKey,
 			PayloadBytes: int64(payloadBytes),
 		})
@@ -313,6 +324,11 @@ func (b *ImmutableTxnMessageBuilder) EstimateSize() int {
 		size += m.EstimateSize()
 	}
 	return size
+}
+
+// Messages returns the begin message and body messages.
+func (b *ImmutableTxnMessageBuilder) Messages() (ImmutableBeginTxnMessageV2, []ImmutableMessage) {
+	return b.begin, b.messages
 }
 
 // Build builds a txn message.

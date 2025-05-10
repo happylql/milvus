@@ -1429,7 +1429,7 @@ class TestInsertInvalid(TestcaseBase):
 
     @pytest.mark.tags(CaseLabel.L2)
     @pytest.mark.parametrize("index ", ct.all_index_types[9:11])
-    @pytest.mark.parametrize("invalid_vector_type ", ["FLOAT_VECTOR", "FLOAT16_VECTOR", "BFLOAT16_VECTOR"])
+    @pytest.mark.parametrize("invalid_vector_type ", ct.all_dense_vector_types)
     def test_invalid_sparse_vector_data(self, index, invalid_vector_type):
         """
         target: insert illegal data type
@@ -2173,9 +2173,10 @@ class TestUpsertValid(TestcaseBase):
         collection_w.load()
         for i in range(5):
             collection_w.upsert(data=data)
-            collection_w.query(expr=f'{ct.default_int64_field_name} >= 0', output_fields=[ct.default_count_output]
-                                        , check_task=CheckTasks.check_query_results,
-                                         check_items={"exp_res": [{"count(*)": ct.default_nb}]})
+            collection_w.query(expr=f'{ct.default_int64_field_name} >= 0',
+                               output_fields=[ct.default_count_output],
+                               check_task=CheckTasks.check_query_results,
+                               check_items={"exp_res": [{"count(*)": ct.default_nb}]})
 
 
 class TestUpsertInvalid(TestcaseBase):

@@ -2447,6 +2447,9 @@ func TestSendReplicateMessagePack(t *testing.T) {
 	t.Run("normal case", func(t *testing.T) {
 		mockStream.EXPECT().Produce(mock.Anything, mock.Anything).Return(nil)
 
+		SendReplicateMessagePack(ctx, mockStream, &milvuspb.AlterCollectionRequest{})
+		SendReplicateMessagePack(ctx, mockStream, &milvuspb.AlterCollectionFieldRequest{})
+		SendReplicateMessagePack(ctx, mockStream, &milvuspb.RenameCollectionRequest{})
 		SendReplicateMessagePack(ctx, mockStream, &milvuspb.CreateDatabaseRequest{})
 		SendReplicateMessagePack(ctx, mockStream, &milvuspb.DropDatabaseRequest{})
 		SendReplicateMessagePack(ctx, mockStream, &milvuspb.FlushRequest{})
@@ -2456,6 +2459,15 @@ func TestSendReplicateMessagePack(t *testing.T) {
 		SendReplicateMessagePack(ctx, mockStream, &milvuspb.DropIndexRequest{})
 		SendReplicateMessagePack(ctx, mockStream, &milvuspb.LoadPartitionsRequest{})
 		SendReplicateMessagePack(ctx, mockStream, &milvuspb.ReleasePartitionsRequest{})
+		SendReplicateMessagePack(ctx, mockStream, &milvuspb.CreateCredentialRequest{})
+		SendReplicateMessagePack(ctx, mockStream, &milvuspb.DeleteCredentialRequest{})
+		SendReplicateMessagePack(ctx, mockStream, &milvuspb.CreateRoleRequest{})
+		SendReplicateMessagePack(ctx, mockStream, &milvuspb.DropRoleRequest{})
+		SendReplicateMessagePack(ctx, mockStream, &milvuspb.OperateUserRoleRequest{})
+		SendReplicateMessagePack(ctx, mockStream, &milvuspb.OperatePrivilegeRequest{})
+		SendReplicateMessagePack(ctx, mockStream, &milvuspb.CreateAliasRequest{})
+		SendReplicateMessagePack(ctx, mockStream, &milvuspb.DropAliasRequest{})
+		SendReplicateMessagePack(ctx, mockStream, &milvuspb.AlterAliasRequest{})
 	})
 }
 
@@ -2851,8 +2863,19 @@ func TestValidateFunction(t *testing.T) {
 
 func TestValidateModelFunction(t *testing.T) {
 	t.Run("Valid model function schema", func(t *testing.T) {
+		paramtable.Init()
+		paramtable.Get().CredentialCfg.Credential.GetFunc = func() map[string]string {
+			return map[string]string{
+				"mock.apikey": "mock",
+			}
+		}
 		ts := function.CreateOpenAIEmbeddingServer()
 		defer ts.Close()
+		paramtable.Get().FunctionCfg.TextEmbeddingProviders.GetFunc = func() map[string]string {
+			return map[string]string{
+				"openai.url": ts.URL,
+			}
+		}
 		schema := &schemapb.CollectionSchema{
 			Fields: []*schemapb.FieldSchema{
 				{Name: "input_field", DataType: schemapb.DataType_VarChar, TypeParams: []*commonpb.KeyValuePair{{Key: "enable_analyzer", Value: "true"}}},
@@ -2879,8 +2902,7 @@ func TestValidateModelFunction(t *testing.T) {
 					Params: []*commonpb.KeyValuePair{
 						{Key: "provider", Value: "openai"},
 						{Key: "model_name", Value: "text-embedding-ada-002"},
-						{Key: "api_key", Value: "mock"},
-						{Key: "url", Value: ts.URL},
+						{Key: "credential", Value: "mock"},
 						{Key: "dim", Value: "4"},
 					},
 				},

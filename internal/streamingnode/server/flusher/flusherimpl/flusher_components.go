@@ -141,7 +141,7 @@ func (impl *flusherComponents) addNewDataSyncService(
 	ds *pipeline.DataSyncService,
 ) {
 	impl.checkpointManager.AddVChannel(createCollectionMsg.VChannel(), createCollectionMsg.LastConfirmedMessageID())
-	newDS := newDataSyncServiceWrapper(input, ds)
+	newDS := newDataSyncServiceWrapper(createCollectionMsg.VChannel(), input, ds)
 	newDS.Start()
 	impl.dataServices[createCollectionMsg.VChannel()] = newDS
 	impl.logger.Info("create data sync service done", zap.String("vchannel", createCollectionMsg.VChannel()))
@@ -168,12 +168,23 @@ func (impl *flusherComponents) recover(ctx context.Context, recoverInfos map[str
 		futures[vchannel] = future
 	}
 	dataServices := make(map[string]*dataSyncServiceWrapper, len(futures))
+	var lastErr error
 	for vchannel, future := range futures {
 		ds, err := future.Await()
 		if err != nil {
-			return err
+			lastErr = err
+			continue
 		}
 		dataServices[vchannel] = ds.(*dataSyncServiceWrapper)
+	}
+	if lastErr != nil {
+		// release all the data sync services if operation is canceled.
+		// otherwise, the write buffer will leak.
+		for _, ds := range dataServices {
+			ds.Close()
+		}
+		impl.logger.Warn("failed to build data sync service, may be canceled when recovering", zap.Error(lastErr))
+		return lastErr
 	}
 	impl.dataServices = dataServices
 	for vchannel, ds := range dataServices {
@@ -195,11 +206,11 @@ func (impl *flusherComponents) buildDataSyncServiceWithRetry(ctx context.Context
 	if len(segmentIDs) > 0 {
 		msg := message.NewFlushMessageBuilderV2().
 			WithVChannel(recoverInfo.GetInfo().GetChannelName()).
-			WithHeader(&message.FlushMessageHeader{}).
-			WithBody(&message.FlushMessageBody{
+			WithHeader(&message.FlushMessageHeader{
 				CollectionId: recoverInfo.GetInfo().GetCollectionID(),
-				SegmentId:    segmentIDs,
-			}).MustBuildMutable()
+				SegmentIds:   segmentIDs,
+			}).
+			WithBody(&message.FlushMessageBody{}).MustBuildMutable()
 		if err := retry.Do(ctx, func() error {
 			appendResult, err := impl.wal.Append(ctx, msg)
 			if err != nil {
@@ -268,5 +279,5 @@ func (impl *flusherComponents) buildDataSyncService(ctx context.Context, recover
 	if err != nil {
 		return nil, err
 	}
-	return newDataSyncServiceWrapper(input, ds), nil
+	return newDataSyncServiceWrapper(recoverInfo.Info.ChannelName, input, ds), nil
 }

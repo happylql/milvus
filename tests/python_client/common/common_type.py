@@ -1,4 +1,5 @@
 import numpy as np
+from pymilvus import DataType
 
 """ Initialized parameters """
 port = 19530
@@ -18,6 +19,7 @@ default_batch_size = 1000
 min_limit = 1
 max_limit = 16384
 max_top_k = 16384
+max_nq = 16384
 max_partition_num = 1024
 max_role_num = 10
 default_partition_num = 16   # default num_partitions for partition key feature
@@ -26,6 +28,7 @@ default_server_segment_row_limit = 1024 * 512
 default_alias = "default"
 default_user = "root"
 default_password = "Milvus"
+default_primary_field_name = 'pk'
 default_bool_field_name = "bool"
 default_int8_field_name = "int8"
 default_int16_field_name = "int16"
@@ -44,14 +47,10 @@ default_float16_vec_field_name = "float16_vector"
 default_bfloat16_vec_field_name = "bfloat16_vector"
 another_float_vec_field_name = "float_vector1"
 default_binary_vec_field_name = "binary_vector"
-float_type = "FLOAT_VECTOR"
-float16_type = "FLOAT16_VECTOR"
-bfloat16_type = "BFLOAT16_VECTOR"
-sparse_vector = "SPARSE_FLOAT_VECTOR"
 text_sparse_vector = "TEXT_SPARSE_VECTOR"
-append_vector_type = [float16_type, bfloat16_type, sparse_vector]
-all_dense_vector_types = [float_type, float16_type, bfloat16_type]
-all_vector_data_types = [float_type, float16_type, bfloat16_type, sparse_vector]
+append_vector_type = [DataType.FLOAT16_VECTOR, DataType.BFLOAT16_VECTOR, DataType.SPARSE_FLOAT_VECTOR]
+all_dense_vector_types = [DataType.FLOAT_VECTOR, DataType.FLOAT16_VECTOR, DataType.BFLOAT16_VECTOR]
+all_float_vector_dtypes = [DataType.FLOAT_VECTOR, DataType.FLOAT16_VECTOR, DataType.BFLOAT16_VECTOR, DataType.SPARSE_FLOAT_VECTOR]
 default_sparse_vec_field_name = "sparse_vector"
 default_partition_name = "_default"
 default_resource_group_name = '__default_resource_group'
@@ -246,13 +245,14 @@ default_all_search_params_params = [{}, {"nprobe": 32}, {"nprobe": 32}, {"nprobe
                                     {}, {}]
 
 Handler_type = ["GRPC", "HTTP"]
-binary_support = ["BIN_FLAT", "BIN_IVF_FLAT"]
-sparse_support = ["SPARSE_INVERTED_INDEX", "SPARSE_WAND"]
-gpu_support = ["GPU_IVF_FLAT", "GPU_IVF_PQ"]
+binary_supported_index_types = ["BIN_FLAT", "BIN_IVF_FLAT"]
+sparse_supported_index_types = ["SPARSE_INVERTED_INDEX", "SPARSE_WAND"]
+gpu_supported_index_types = ["GPU_IVF_FLAT", "GPU_IVF_PQ"]
 default_L0_metric = "COSINE"
-float_metrics = ["L2", "IP", "COSINE"]
+dense_metrics = ["L2", "IP", "COSINE"]
 binary_metrics = ["JACCARD", "HAMMING", "SUBSTRUCTURE", "SUPERSTRUCTURE"]
 structure_metrics = ["SUBSTRUCTURE", "SUPERSTRUCTURE"]
+sparse_metrics = ["IP", "BM25"]
 all_scalar_data_types = ['int8', 'int16', 'int32', 'int64', 'float', 'double', 'bool', 'varchar']
 
 

@@ -176,15 +176,12 @@ func NewLoader(
 	duf := NewDiskUsageFetcher(ctx)
 	go duf.Start()
 
-	warmupDispatcher := NewWarmupDispatcher()
-	go warmupDispatcher.Run(ctx)
 	loader := &segmentLoader{
 		manager:                   manager,
 		cm:                        cm,
 		loadingSegments:           typeutil.NewConcurrentMap[int64, *loadResult](),
 		committedResourceNotifier: syncutil.NewVersionedNotifier(),
 		duf:                       duf,
-		warmupDispatcher:          warmupDispatcher,
 	}
 
 	return loader
@@ -227,8 +224,7 @@ type segmentLoader struct {
 	committedResource         LoadResource
 	committedResourceNotifier *syncutil.VersionedNotifier
 
-	duf              *diskUsageFetcher
-	warmupDispatcher *AsyncWarmupDispatcher
+	duf *diskUsageFetcher
 }
 
 var _ Loader = (*segmentLoader)(nil)
@@ -311,7 +307,6 @@ func (loader *segmentLoader) Load(ctx context.Context,
 			segmentType,
 			version,
 			loadInfo,
-			loader.warmupDispatcher,
 		)
 		if err != nil {
 			log.Warn("load segment failed when create new segment",
@@ -357,6 +352,10 @@ func (loader *segmentLoader) Load(ctx context.Context,
 		}
 		if err = loader.loadDeltalogs(ctx, segment, loadInfo.GetDeltalogs()); err != nil {
 			return errors.Wrap(err, "At LoadDeltaLogs")
+		}
+
+		if err = segment.FinishLoad(); err != nil {
+			return errors.Wrap(err, "At FinishLoad")
 		}
 
 		if segment.Level() != datapb.SegmentLevel_L0 {
@@ -808,7 +807,7 @@ func (loader *segmentLoader) loadSealedSegment(ctx context.Context, loadInfo *qu
 		if err != nil {
 			return err
 		}
-		if (!typeutil.IsVectorType(field.GetDataType()) && !segment.HasRawData(fieldID)) || field.GetIsPrimaryKey() {
+		if !segment.HasRawData(fieldID) || field.GetIsPrimaryKey() {
 			log.Info("field index doesn't include raw data, load binlog...",
 				zap.Int64("fieldID", fieldID),
 				zap.String("index", info.IndexInfo.GetIndexName()),
@@ -1552,8 +1551,8 @@ func getResourceUsageEstimateOfSegment(schema *schemapb.CollectionSchema, loadIn
 						fieldIndexInfo.GetBuildID())
 				}
 				if metricType != metric.BM25 {
-					mmapChunkCache := paramtable.Get().QueryNodeCfg.MmapChunkCache.GetAsBool()
-					if mmapChunkCache {
+					mmapVectorField := paramtable.Get().QueryNodeCfg.MmapVectorField.GetAsBool()
+					if mmapVectorField {
 						segmentDiskSize += binlogSize
 					} else {
 						segmentMemorySize += binlogSize
